@@ -210,13 +210,11 @@ export class BlurHelper {
             // ignore
         }
 
-        if (align === (Alignment.TOP | Alignment.CENTER) || align === Alignment.TOP)
-            return 2; // only bottom rounded
-        if (align === (Alignment.BOTTOM | Alignment.CENTER) || align === Alignment.BOTTOM)
-            return 1; // only top rounded
-        if (align !== Alignment.NONE)
-            return 3; // corners or side docked: straight blur corners so edge-touching corners are not clipped
-        return 0; // floating: all corners rounded
+        if (align & Alignment.TOP)
+            return 2; // top docked: only bottom rounded
+        if (align & Alignment.BOTTOM)
+            return 1; // bottom docked: only top rounded
+        return 0; // floating or side-centered: all corners rounded
     }
 
     _getCornerRadius() {
@@ -225,17 +223,6 @@ export class BlurHelper {
             if (setRadius > 0)
                 return setRadius;
         }
-        let align = Alignment.NONE;
-        try {
-            if (this._panel._sets)
-                align = this._panel._sets.get_int('aligned');
-        } catch (e) {
-            // ignore
-        }
-
-        if (align !== Alignment.NONE)
-            return 15;
-
         return 8;
     }
 
@@ -243,6 +230,7 @@ export class BlurHelper {
         if (this._pipeline) {
             this._pipeline.set_corner_radius(this._getCornerRadius());
             this._pipeline.roundedPipeline?.update();
+            this._pipeline.repaint_effect?.();
         }
     }
 
@@ -290,9 +278,19 @@ export class BlurHelper {
                     this._pipeline.change_pipeline_to(pipelineId);
                 }
                 break;
-            case 'corner-radius':
+            case 'corner-radius': {
+                let align = Alignment.NONE;
+                try {
+                    if (this._panel?._sets)
+                        align = this._panel._sets.get_int('aligned');
+                } catch (e) {
+                    // ignore
+                }
+                if (this._panel?._adjustBorder)
+                    this._panel._adjustBorder(align);
                 this._updateCornerRadius();
                 break;
+            }
             case 'style-panel':
             case 'force-light-text':
                 this._updateStyle();

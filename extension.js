@@ -754,37 +754,38 @@ const FloatingMiniPanel = GObject.registerClass(
         }
 
         _adjustBorder(align) {
+            const r = this._blurHelper ? this._blurHelper._getCornerRadius() : 8;
             switch (align) {
                 case Alignment.LEFT | Alignment.TOP:
-                    this.style = 'border-radius: 0px 0px 15px 0px;';
+                    this.style = `border-radius: 0px 0px ${r}px 0px;`;
                     break;
                 case Alignment.LEFT | Alignment.BOTTOM:
-                    this.style = 'border-radius: 0px 15px 0px 0px;';
+                    this.style = `border-radius: 0px ${r}px 0px 0px;`;
                     break;
                 case Alignment.RIGHT | Alignment.TOP:
-                    this.style = 'border-radius: 0px 0px 0px 15px;';
+                    this.style = `border-radius: 0px 0px 0px ${r}px;`;
                     break;
                 case Alignment.RIGHT | Alignment.BOTTOM:
-                    this.style = 'border-radius: 15px 0px 0px 0px;';
+                    this.style = `border-radius: ${r}px 0px 0px 0px;`;
                     break;
                 case Alignment.TOP:
                 case Alignment.TOP | Alignment.CENTER:
-                    this.style = 'border-radius: 0px 0px 15px 15px;';
+                    this.style = `border-radius: 0px 0px ${r}px ${r}px;`;
                     break;
                 case Alignment.BOTTOM:
                 case Alignment.BOTTOM | Alignment.CENTER:
-                    this.style = 'border-radius: 15px 15px 0px 0px;';
+                    this.style = `border-radius: ${r}px ${r}px 0px 0px;`;
                     break;
                 case Alignment.LEFT:
                 case Alignment.LEFT | Alignment.CENTER:
-                    this.style = 'border-radius: 0px 15px 15px 0px;';
+                    this.style = `border-radius: 0px ${r}px ${r}px 0px;`;
                     break;
                 case Alignment.RIGHT:
                 case Alignment.RIGHT | Alignment.CENTER:
-                    this.style = 'border-radius: 15px 0px 0px 15px;';
+                    this.style = `border-radius: ${r}px 0px 0px ${r}px;`;
                     break;
                 default:
-                    this.style = null;
+                    this.style = r !== 8 ? `border-radius: ${r}px;` : null;
                     break;
             }
 
