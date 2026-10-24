@@ -44,6 +44,25 @@ const Alignment = {
     CENTER: 16,
 };
 
+function setCursor(type) {
+    try {
+        if (typeof global !== 'undefined' && global.stage && typeof global.stage.set_cursor_type === 'function') {
+            let cursorType = (type === 'move')
+                ? (Clutter.CursorType?.MOVE ?? Clutter.CursorType?.ALL_SCROLL ?? Clutter.CursorType?.DEFAULT ?? 0)
+                : (Clutter.CursorType?.DEFAULT ?? 0);
+            global.stage.set_cursor_type(cursorType);
+        } else if (DISPLAY && typeof DISPLAY.set_cursor === 'function' && typeof Meta !== 'undefined' && Meta?.Cursor) {
+            let cursor = Meta.Cursor.DEFAULT;
+            if (type === 'move') {
+                cursor = (shellVersion < 47) ? Meta.Cursor.MOVE_OR_RESIZE_WINDOW : Meta.Cursor.MOVE;
+            }
+            DISPLAY.set_cursor(cursor);
+        }
+    } catch (e) {
+        // ignore cursor setting errors
+    }
+}
+
 export const CtlActions = GObject.registerClass(
     class CtlActions extends Clutter.Action {
         constructor(actor) {
@@ -61,9 +80,9 @@ export const CtlActions = GObject.registerClass(
                     // Execute Drag
                     if (this._grab !== null) {
                         let [x, y] = event.get_coords();
-                        x = Math.ceil(x - this._actor.width / 2);
-                        y = Math.ceil(y - this._actor.height / 2);
-                        this._parent.set_position(x, y);
+                        let newX = Math.ceil(x - (this._dragOffsetX ?? (this._actor.width / 2)));
+                        let newY = Math.ceil(y - (this._dragOffsetY ?? (this._actor.height / 2)));
+                        this._parent.set_position(newX, newY);
                     }
                     break;
                 case Clutter.EventType.BUTTON_PRESS:
@@ -72,6 +91,7 @@ export const CtlActions = GObject.registerClass(
                         GLib.Source.remove(this._timeoutId);
                         this._timeoutId = null;
                     }
+                    let pressCoords = event.get_coords();
                     this._timeoutId = GLib.timeout_add(
                         GLib.PRIORITY_DEFAULT,
                         250,
@@ -81,7 +101,7 @@ export const CtlActions = GObject.registerClass(
                                 // Ignoring modifier keys (event.get_state())
                                 switch (event.get_button()) {
                                     case Clutter.BUTTON_PRIMARY:
-                                        this._leftBtnLongPress();
+                                        this._leftBtnLongPress(pressCoords);
                                         break;
                                     case Clutter.BUTTON_MIDDLE:
                                         this._middleBtnLongPress();
@@ -106,8 +126,12 @@ export const CtlActions = GObject.registerClass(
                             Main.popModal(this._grab);
                             this._grab.dismiss();
                             this._grab = null;
-                            this._actor.firstChild.opacity = 255;
-                            DISPLAY.set_cursor(Meta.Cursor.DEFAULT);
+                            if (this._actor._handleIcon) {
+                                this._actor._handleIcon.opacity = 255;
+                            } else if (this._actor.firstChild) {
+                                this._actor.firstChild.opacity = 255;
+                            }
+                            setCursor('default');
                             this._parent._relocate(true);
                         }
                     } else {
@@ -135,17 +159,29 @@ export const CtlActions = GObject.registerClass(
         }
 
         // Left longpress action
-        _leftBtnLongPress() {
+        _leftBtnLongPress(eventCoords) {
             // Prepare Drag if no other drag is ongoing
             if (this._grab === null) {
                 this._grab = Main.pushModal(this._actor);
                 this._actor.remove_style_pseudo_class('focus');
                 this._parent.style = null;
-                this._actor.firstChild.opacity = 0;
-                let cursor = Meta.Cursor.MOVE;
-                if (shellVersion < 47)
-                    cursor = Meta.Cursor.MOVE_OR_RESIZE_WINDOW;
-                DISPLAY.set_cursor(cursor);
+                if (this._actor._handleIcon) {
+                    this._actor._handleIcon.opacity = 0;
+                } else if (this._actor.firstChild) {
+                    this._actor.firstChild.opacity = 0;
+                }
+                setCursor('move');
+
+                let [panelX, panelY] = this._parent.get_position
+                    ? this._parent.get_position()
+                    : [this._parent.x, this._parent.y];
+                if (eventCoords) {
+                    this._dragOffsetX = eventCoords[0] - panelX;
+                    this._dragOffsetY = eventCoords[1] - panelY;
+                } else {
+                    this._dragOffsetX = Math.ceil(this._actor.width / 2);
+                    this._dragOffsetY = Math.ceil(this._actor.height / 2);
+                }
             }
         }
 
@@ -299,14 +335,14 @@ export const ControlButton = GObject.registerClass(
 
             this._parent = parent;
 
-            this.add_child(
-                new St.Icon({
-                    icon_name: 'list-drag-handle-symbolic',
-                    style_class: 'system-status-icon',
-                    x_expand: true,
-                    x_align: Clutter.ActorAlign.CENTER,
-                })
-            );
+            this._handleIcon = new St.Icon({
+                icon_name: 'list-drag-handle-symbolic',
+                style_class: 'system-status-icon',
+                x_expand: true,
+                x_align: Clutter.ActorAlign.CENTER,
+            });
+            this._handleIcon.set_pivot_point(0.5, 0.5);
+            this.add_child(this._handleIcon);
 
             // Control Menu
             this.menu = new PopupMenu.PopupMenu(this, 0.5, St.Side.TOP);
@@ -424,7 +460,13 @@ export const ControlButton = GObject.registerClass(
                 this.orientStr,
                 GObject.BindingFlags.SYNC_CREATE,
                 (binding, value) => {
-                    if (value) {
+                    let isVertical = shellVersion > 47
+                        ? value === Clutter.Orientation.VERTICAL
+                        : Boolean(value);
+
+                    this._updateHandleRotation(isVertical);
+
+                    if (isVertical) {
                         this.ltTxt = 'Left';
                         this.rbTxt = 'Right';
                     } else {
@@ -457,6 +499,13 @@ export const ControlButton = GObject.registerClass(
             });
         }
 
+        _updateHandleRotation(isVertical) {
+            if (this._handleIcon) {
+                this._handleIcon.set_pivot_point(0.5, 0.5);
+                this._handleIcon.rotation_angle_z = isVertical ? 90.0 : 0.0;
+            }
+        }
+
         _doAlign(align) {
             this._parent._sets.set_int('aligned', align);
             this._parent._relocate(false);
@@ -465,26 +514,8 @@ export const ControlButton = GObject.registerClass(
         // START CODE VERTICAL
         _changeOrientation() {
             this._doAlign(Alignment.NONE);
-
-            if (this._parent.width > this._parent.height) {
-                this._parent._sets.set_boolean('vertical', true);
-                if (shellVersion > 47) {
-                    this._parent.orientation = Clutter.Orientation.VERTICAL;
-                } else {
-                    this._parent.vertical = true;
-                }
-                this._parent.remove_style_pseudo_class('horizontal');
-                this._parent.add_style_pseudo_class('vertical');
-            } else {
-                this._parent._sets.set_boolean('vertical', false);
-                if (shellVersion > 47) {
-                    this._parent.orientation = Clutter.Orientation.HORIZONTAL;
-                } else {
-                    this._parent.vertical = false;
-                }
-                this._parent.remove_style_pseudo_class('vertical');
-                this._parent.add_style_pseudo_class('horizontal');
-            }
+            let isVertical = Boolean(this._parent._sets.get_boolean('vertical'));
+            this._parent.setOrientation(!isVertical);
         }
 
         _updateArrowSide() {
@@ -510,6 +541,7 @@ export const ControlButton = GObject.registerClass(
                 this._action.destroy();
                 this._action = null;
             }
+            this._handleIcon = null;
             super.destroy();
         }
     }

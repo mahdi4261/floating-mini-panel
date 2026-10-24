@@ -599,6 +599,28 @@ const FloatingMiniPanel = GObject.registerClass(
             }
         }
 
+        setOrientation(isVertical) {
+            let current = Boolean(this._sets.get_boolean('vertical'));
+            if (current === isVertical)
+                return;
+
+            this._sets.set_boolean('vertical', isVertical);
+            if (shellVersion > 47) {
+                this.orientation = isVertical
+                    ? Clutter.Orientation.VERTICAL
+                    : Clutter.Orientation.HORIZONTAL;
+            } else {
+                this.vertical = isVertical;
+            }
+            if (isVertical) {
+                this.remove_style_pseudo_class('horizontal');
+                this.add_style_pseudo_class('vertical');
+            } else {
+                this.remove_style_pseudo_class('vertical');
+                this.add_style_pseudo_class('horizontal');
+            }
+        }
+
         // If this was moved, its width changed or the workarea has changed-----
         // Refactored and support for AUTO POSITION (Issue #5)
         _relocate(setAlign) {
@@ -615,42 +637,113 @@ const FloatingMiniPanel = GObject.registerClass(
 
             let align = Alignment.NONE;
 
-            if (rect.y < geom.y) {
-                rect.y = geom.y;
-                align |= Alignment.TOP;
-            }
-
-            let max_y = geom.y + geom.height - rect.height;
-            if (rect.y > max_y) {
-                rect.y = max_y;
-                align |= Alignment.BOTTOM;
-            }
-
-            if (rect.x < geom.x) {
-                rect.x = geom.x;
-                align |= Alignment.LEFT;
-            }
-
-            let max_x = geom.x + geom.width - rect.width;
-            if (rect.x > max_x) {
-                rect.x = max_x;
-                align |= Alignment.RIGHT;
-            }
-
             if (setAlign) {
+                const SNAP_THRESHOLD = 80;
+
+                let cx = rect.x + rect.width / 2;
+                let cy = rect.y + rect.height / 2;
+
+                let distTop = rect.y - geom.y;
+                let distBottom = (geom.y + geom.height) - (rect.y + rect.height);
+                let distLeft = rect.x - geom.x;
+                let distRight = (geom.x + geom.width) - (rect.x + rect.width);
+
+                let nearTop = distTop <= SNAP_THRESHOLD;
+                let nearBottom = distBottom <= SNAP_THRESHOLD;
+                let nearLeft = distLeft <= SNAP_THRESHOLD;
+                let nearRight = distRight <= SNAP_THRESHOLD;
+
+                let targetEdge = null;
+
+                if (nearTop || nearBottom || nearLeft || nearRight) {
+                    let dCenterTop = Math.abs(cy - geom.y);
+                    let dCenterBottom = Math.abs((geom.y + geom.height) - cy);
+                    let dCenterLeft = Math.abs(cx - geom.x);
+                    let dCenterRight = Math.abs((geom.x + geom.width) - cx);
+
+                    let minVert = Math.min(
+                        nearTop ? dCenterTop : Infinity,
+                        nearBottom ? dCenterBottom : Infinity
+                    );
+                    let minHoriz = Math.min(
+                        nearLeft ? dCenterLeft : Infinity,
+                        nearRight ? dCenterRight : Infinity
+                    );
+
+                    if (minVert < minHoriz) {
+                        targetEdge = (nearTop && dCenterTop <= dCenterBottom) ? 'top' : 'bottom';
+                    } else {
+                        targetEdge = (nearLeft && dCenterLeft <= dCenterRight) ? 'left' : 'right';
+                    }
+                }
+
+                if (targetEdge === 'bottom' || targetEdge === 'top') {
+                    // Moving bottom/top anchors it to the bottom/top (also makes the panel horizontal if not)
+                    this.setOrientation(false);
+
+                    let [, natW] = this.get_preferred_width(-1);
+                    let [, natH] = this.get_preferred_height(natW);
+                    rect.width = natW > 0 ? natW : this.width;
+                    rect.height = natH > 0 ? natH : this.height;
+
+                    let relX = (cx - geom.x) / geom.width;
+                    let edgeAlign = (targetEdge === 'top') ? Alignment.TOP : Alignment.BOTTOM;
+
+                    if (relX < 0.33) {
+                        align = edgeAlign | Alignment.LEFT;
+                    } else if (relX > 0.67) {
+                        align = edgeAlign | Alignment.RIGHT;
+                    } else {
+                        align = edgeAlign | Alignment.CENTER;
+                    }
+                } else if (targetEdge === 'left' || targetEdge === 'right') {
+                    // Moving left/right side changes orientation to vertical and anchors to that side
+                    this.setOrientation(true);
+
+                    let [, natW] = this.get_preferred_width(-1);
+                    let [, natH] = this.get_preferred_height(natW);
+                    rect.width = natW > 0 ? natW : this.width;
+                    rect.height = natH > 0 ? natH : this.height;
+
+                    let relY = (cy - geom.y) / geom.height;
+                    let edgeAlign = (targetEdge === 'left') ? Alignment.LEFT : Alignment.RIGHT;
+
+                    if (relY < 0.33) {
+                        align = edgeAlign | Alignment.TOP;
+                    } else if (relY > 0.67) {
+                        align = edgeAlign | Alignment.BOTTOM;
+                    } else {
+                        align = edgeAlign | Alignment.CENTER;
+                    }
+                } else {
+                    align = Alignment.NONE;
+                }
+
                 this._sets.set_int('aligned', align);
             } else {
                 align = this._sets.get_int('aligned');
+            }
+
+            let max_x = geom.x + geom.width - rect.width;
+            let max_y = geom.y + geom.height - rect.height;
+
+            if (align !== Alignment.NONE) {
                 if (align & Alignment.TOP) rect.y = geom.y;
                 if (align & Alignment.BOTTOM) rect.y = max_y;
                 if (align & Alignment.LEFT) rect.x = geom.x;
                 if (align & Alignment.RIGHT) rect.x = max_x;
-                if (this[this.orientStr]) {
-                    if (align & Alignment.CENTER) rect.y = geom.y + (geom.height - rect.height) / 2;
+
+                let isVertical = Boolean(this._sets.get_boolean('vertical'));
+                if (isVertical) {
+                    if (align & Alignment.CENTER)
+                        rect.y = Math.floor(geom.y + (geom.height - rect.height) / 2);
                 } else {
-                    // BUG: 'max_x / 2' which is '(geom.x + geom.width - rect.width) / 2' was used !!!
-                    if (align & Alignment.CENTER) rect.x = geom.x + (geom.width - rect.width) / 2;
+                    if (align & Alignment.CENTER)
+                        rect.x = Math.floor(geom.x + (geom.width - rect.width) / 2);
                 }
+            } else {
+                rect.x = Math.max(geom.x, Math.min(rect.x, max_x));
+                rect.y = Math.max(geom.y, Math.min(rect.y, max_y));
             }
 
             this._adjustBorder(align);
@@ -668,7 +761,7 @@ const FloatingMiniPanel = GObject.registerClass(
                 case Alignment.LEFT | Alignment.BOTTOM:
                     this.style = 'border-radius: 0px 15px 0px 0px;';
                     break;
-               case Alignment.RIGHT | Alignment.TOP:
+                case Alignment.RIGHT | Alignment.TOP:
                     this.style = 'border-radius: 0px 0px 0px 15px;';
                     break;
                 case Alignment.RIGHT | Alignment.BOTTOM:

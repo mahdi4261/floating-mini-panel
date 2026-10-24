@@ -210,11 +210,13 @@ export class BlurHelper {
             // ignore
         }
 
-        if (align & Alignment.TOP)
+        if (align === (Alignment.TOP | Alignment.CENTER) || align === Alignment.TOP)
             return 2; // only bottom rounded
-        if (align & Alignment.BOTTOM)
+        if (align === (Alignment.BOTTOM | Alignment.CENTER) || align === Alignment.BOTTOM)
             return 1; // only top rounded
-        return 0; // all corners rounded
+        if (align !== Alignment.NONE)
+            return 3; // corners or side docked: straight blur corners so edge-touching corners are not clipped
+        return 0; // floating: all corners rounded
     }
 
     _getCornerRadius() {
@@ -223,8 +225,18 @@ export class BlurHelper {
             if (setRadius > 0)
                 return setRadius;
         }
-        const minDim = Math.min(this._panel.width || 36, this._panel.height || 36);
-        return Math.max(1, Math.floor(minDim / 2));
+        let align = Alignment.NONE;
+        try {
+            if (this._panel._sets)
+                align = this._panel._sets.get_int('aligned');
+        } catch (e) {
+            // ignore
+        }
+
+        if (align !== Alignment.NONE)
+            return 15;
+
+        return 8;
     }
 
     _updateCornerRadius() {

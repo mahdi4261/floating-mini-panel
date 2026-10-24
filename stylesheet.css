@@ -1,4 +1,8 @@
 
+#FloatingMiniPanel {
+  border-radius: 8px;
+}
+
 #FloatingMiniPanel:horizontal {
 /*  height: 32px; */
   height: 36px;
@@ -93,7 +97,7 @@
 #FloatingMiniPanel.bms-blurred {
   box-shadow: none !important;
   border: none !important;
-  border-radius: 9999px;
+  border-radius: 8px;
 }
 
 #FloatingMiniPanel.bms-blurred.transparent-panel {
