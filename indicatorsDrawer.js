@@ -50,9 +50,7 @@ const IndicatorClone = GObject.registerClass(
                 name: 'extBtn',
                 reactive: true,
                 track_hover: true,
-                style_class: 'button btn',
-                x_expand: true,
-                y_expand: true,
+                style_class: 'button btn extBtn',
             });
 
             this._parent = parent;
@@ -283,9 +281,7 @@ const IndicatorClone = GObject.registerClass(
                     let i = this._indContainers.length - 1;
                     this._containers.push(
                         new St.BoxLayout({
-                            x_expand: true,
                             x_align: Clutter.ActorAlign.FILL,
-                            y_expand: true,
                             y_align: Clutter.ActorAlign.FILL,
                         })
                     );
