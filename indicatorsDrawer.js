@@ -65,11 +65,11 @@ function setCursor(type) {
     }
 }
 
-function isCoordInsideActor(actor, x, y) {
+function isCoordInsideActor(actor, x, y, margin = 0) {
     if (!actor || !actor.mapped || !actor.visible) return false;
     let [ax, ay] = actor.get_transformed_position ? actor.get_transformed_position() : [actor.x, actor.y];
     let [aw, ah] = actor.get_transformed_size ? actor.get_transformed_size() : [actor.width, actor.height];
-    return (x >= ax && x <= ax + aw && y >= ay && y <= ay + ah);
+    return (x >= ax - margin && x <= ax + aw + margin && y >= ay - margin && y <= ay + ah + margin);
 }
 
 function getIndicatorId(ind, role) {
@@ -119,7 +119,6 @@ const IndicatorClone = GObject.registerClass(
             this._dragClone = null;
             this._grab = null;
             this._dragTimer = null;
-            this._arrowHoverTimer = null;
 
             this._indChilds = [];
             this._indContainers = [];
@@ -378,35 +377,29 @@ const IndicatorClone = GObject.registerClass(
             if (!this._ind) return;
 
             // If indicator has a shell menu, update constraints and toggle it
+            // NOTE: Do NOT close flyout here so that the indicator's menu remains anchored and visible!
             if (this._ind.menu) {
                 Utils.updateMenuConstraints(this, this._ind.menu);
-                if (this._isHidden && this._parent?.closeFlyout) {
-                    this._parent.closeFlyout();
-                }
                 this._ind.menu.toggle();
                 return;
             }
 
             if (this._ind.arcMenu) {
                 Utils.updateMenuConstraints(this, this._ind.arcMenu);
-                if (this._isHidden && this._parent?.closeFlyout) {
-                    this._parent.closeFlyout();
-                }
                 this._ind.arcMenu.toggle();
                 return;
             }
 
             try {
-                if (this._isHidden && this._parent?.closeFlyout) {
-                    this._parent.closeFlyout();
-                }
                 if (typeof this._ind.vfunc_button_press_event === 'function') {
                     this._ind.vfunc_button_press_event(event);
                 } else {
                     this._ind.emit('event', event);
                 }
             } catch (e) {
-                // ignore
+                if (this._ind.menu) {
+                    this._ind.menu.toggle();
+                }
             }
         }
 
@@ -442,27 +435,9 @@ const IndicatorClone = GObject.registerClass(
                     Math.floor(y - this._dragOffsetY)
                 );
             }
-
-            if (this._parent?._isInsideArrow?.(x, y)) {
-                if (!this._arrowHoverTimer && !this._parent._flyout?.isOpen) {
-                    this._arrowHoverTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 300, () => {
-                        this._parent.openFlyout();
-                        this._arrowHoverTimer = null;
-                        return GLib.SOURCE_REMOVE;
-                    });
-                }
-            } else if (this._arrowHoverTimer) {
-                GLib.Source.remove(this._arrowHoverTimer);
-                this._arrowHoverTimer = null;
-            }
         }
 
         _endDrag(x, y) {
-            if (this._arrowHoverTimer) {
-                GLib.Source.remove(this._arrowHoverTimer);
-                this._arrowHoverTimer = null;
-            }
-
             if (this._dragClone) {
                 Main.uiGroup.remove_child(this._dragClone);
                 this._dragClone.destroy();
@@ -717,11 +692,6 @@ const IndicatorClone = GObject.registerClass(
                 this._dragTimer = null;
             }
 
-            if (this._arrowHoverTimer) {
-                GLib.Source.remove(this._arrowHoverTimer);
-                this._arrowHoverTimer = null;
-            }
-
             if (this._dragClone) {
                 Main.uiGroup.remove_child(this._dragClone);
                 this._dragClone.destroy();
@@ -823,6 +793,7 @@ export const IndicatorsDrawer = GObject.registerClass(
 
             // 3. Hidden Indicators Overflow Flyout ----------------------------
             this._flyout = new PopupMenu.PopupMenu(this._arrowBtn, 0.5, St.Side.BOTTOM);
+            this._flyout.actor.add_style_class_name('hidden-flyout-menu');
             Main.uiGroup.add_child(this._flyout.actor);
             // Use dedicated PopupMenuManager so panel indicator hovers don't close the flyout
             this._menuManager = new PopupMenu.PopupMenuManager(this);
@@ -1158,15 +1129,15 @@ export const IndicatorsDrawer = GObject.registerClass(
         }
 
         _isInsideArrow(x, y) {
-            return isCoordInsideActor(this._arrowBtn, x, y);
+            return isCoordInsideActor(this._arrowBtn, x, y, 12);
         }
 
         _isInsideFlyout(x, y) {
-            return isCoordInsideActor(this._flyout?.actor, x, y);
+            return isCoordInsideActor(this._flyout?.actor, x, y, 6);
         }
 
         _isInsidePanel(x, y) {
-            return isCoordInsideActor(this._parent, x, y);
+            return isCoordInsideActor(this._parent, x, y, 20);
         }
 
         destroy() {

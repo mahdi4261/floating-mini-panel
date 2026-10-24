@@ -332,16 +332,20 @@ export const ControlButton = GObject.registerClass(
                 name: 'ctlBtn',
                 reactive: true,
                 track_hover: true,
-                style_class: 'button ctlBtn',
+                style_class: 'button btn ctlBtn',
+                x_align: Clutter.ActorAlign.CENTER,
+                y_align: Clutter.ActorAlign.CENTER,
             });
 
             this._parent = parent;
 
             this._handleIcon = new St.Icon({
                 icon_name: 'list-drag-handle-symbolic',
-                style_class: 'system-status-icon',
+                icon_size: 16,
+                style_class: 'system-status-icon handleIcon',
                 x_expand: true,
                 x_align: Clutter.ActorAlign.CENTER,
+                y_align: Clutter.ActorAlign.CENTER,
             });
             this._handleIcon.set_pivot_point(0.5, 0.5);
             this.add_child(this._handleIcon);

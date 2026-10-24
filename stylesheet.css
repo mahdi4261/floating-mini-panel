@@ -14,6 +14,34 @@
   padding: 0px 0px;
 }
 
+/* Drag Handle (.ctlBtn) dimensions and centering */
+#FloatingMiniPanel .ctlBtn {
+  width: 28px;
+  min-width: 28px;
+  max-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  max-height: 28px;
+  padding: 0px;
+  border-radius: 6px;
+}
+
+#FloatingMiniPanel:horizontal .ctlBtn {
+  margin: 4px 1px;
+}
+
+#FloatingMiniPanel:vertical .ctlBtn {
+  margin: 1px 4px;
+}
+
+#FloatingMiniPanel .ctlBtn .system-status-icon,
+#FloatingMiniPanel .ctlBtn .handleIcon {
+  width: 16px;
+  height: 16px;
+  padding: 0px;
+  -st-icon-style: symbolic !important;
+}
+
 /* Quick Settings indicators (right side) spacing and dimensions */
 #FloatingMiniPanel #quickBtn {
   spacing: 5px;
@@ -87,14 +115,6 @@
   border: 1px solid grey;
 }
 
-#FloatingMiniPanel:horizontal .ctlBtn {
-  padding: 0px 2px;
-}
-
-#FloatingMiniPanel:vertical .ctlBtn {
-  padding: 2px 0px;
-}
-
 #FloatingMiniPanel:horizontal .btn {
   padding: 0px 8px;
 }
@@ -122,16 +142,23 @@
 }
 
 /* Windows-style Hidden Indicators Flyout */
+.hidden-flyout-menu .popup-menu-content {
+  padding: 4px !important;
+  min-width: 0px !important;
+}
+
 .hidden-menu-item {
   padding: 0px !important;
+  margin: 0px !important;
+  min-width: 0px !important;
 }
 
 .hidden-indicators-container {
-  padding: 6px;
+  padding: 4px;
 }
 
 .hidden-indicators-box {
-  padding: 2px;
+  padding: 0px;
   spacing: 4px;
 }
 
@@ -156,8 +183,8 @@
 }
 
 .hidden-empty-label {
-  padding: 8px 16px;
-  font-size: 11pt;
+  padding: 6px 12px;
+  font-size: 10pt;
   color: #aaaaaa;
 }
 
@@ -189,26 +216,30 @@
 }
 
 #FloatingMiniPanel.bms-blurred .button,
-#FloatingMiniPanel.bms-blurred .arrowBtn {
+#FloatingMiniPanel.bms-blurred .arrowBtn,
+#FloatingMiniPanel.bms-blurred .ctlBtn {
   background-color: transparent !important;
   box-shadow: none !important;
   border: none !important;
 }
 
 #FloatingMiniPanel.bms-blurred .button:hover,
-#FloatingMiniPanel.bms-blurred .arrowBtn:hover {
+#FloatingMiniPanel.bms-blurred .arrowBtn:hover,
+#FloatingMiniPanel.bms-blurred .ctlBtn:hover {
   background-color: rgba(255, 255, 255, 0.12) !important;
 }
 
 #FloatingMiniPanel.bms-blurred .button:active,
-#FloatingMiniPanel.bms-blurred .arrowBtn:active {
+#FloatingMiniPanel.bms-blurred .arrowBtn:active,
+#FloatingMiniPanel.bms-blurred .ctlBtn:active {
   background-color: rgba(255, 255, 255, 0.2) !important;
 }
 
 #FloatingMiniPanel.bms-blurred.bms-light-text,
 #FloatingMiniPanel.bms-blurred.bms-light-text StLabel,
 #FloatingMiniPanel.bms-blurred.bms-light-text .system-status-icon,
-#FloatingMiniPanel.bms-blurred.bms-light-text .arrowIcon {
+#FloatingMiniPanel.bms-blurred.bms-light-text .arrowIcon,
+#FloatingMiniPanel.bms-blurred.bms-light-text .handleIcon {
   color: #ffffff !important;
 }
 
