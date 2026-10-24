@@ -50,6 +50,13 @@
         Always visible 3rd party extension indicators.
       </description>
     </key>
+    <key name="hidden-indicators" type="as">
+      <default>[]</default>
+      <summary>Hidden indicators</summary>
+      <description>
+        List of 3rd party indicator IDs hidden in the overflow flyout.
+      </description>
+    </key>
     <key name="show-handle" type="b">
       <default>true</default>
       <summary>Show handle button</summary>

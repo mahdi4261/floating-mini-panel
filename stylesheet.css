@@ -14,32 +14,60 @@
   padding: 0px 0px;
 }
 
-#FloatingMiniPanel:horizontal .system-status-icon {
-  width: 24px;
-/*  padding: 8px 0px; */
-  padding: 10px 0px;
+/* Quick Settings indicators (right side) spacing and dimensions */
+#FloatingMiniPanel #quickBtn {
+  spacing: 5px;
+}
+
+#FloatingMiniPanel:horizontal #quickBtn .system-status-icon {
+  width: 22px;
+  height: 22px;
+  padding: 7px 0px;
   -st-icon-style: symbolic !important;
 }
 
-#FloatingMiniPanel:vertical .system-status-icon {
-  height: 24px;
-  padding: 0px 10px;
+#FloatingMiniPanel:vertical #quickBtn .system-status-icon {
+  width: 22px;
+  height: 22px;
+  padding: 0px 7px;
   -st-icon-style: symbolic !important;
 }
 
-#FloatingMiniPanel:horizontal .system-status-icon-2 {
-  width: 24px;
-  padding-top: 11px;
-  padding-bottom: 11px;
-  padding-left: 8px;
-  -st-icon-style: symbolic !important;
+/* Extension & 3rd party indicator buttons */
+#FloatingMiniPanel:horizontal .extBtn,
+#FloatingMiniPanel:horizontal .btn.extBtn,
+#FloatingMiniPanel:horizontal .arrowBtn {
+  width: 28px;
+  min-width: 28px;
+  max-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  max-height: 28px;
+  padding: 0px;
+  margin: 4px 1px;
+  border-radius: 6px;
 }
 
-#FloatingMiniPanel:vertical .system-status-icon-2 {
-  height: 24px;
-  padding-left: 10px;
-  padding-right: 10px;
-  padding-top: 8px;
+#FloatingMiniPanel:vertical .extBtn,
+#FloatingMiniPanel:vertical .btn.extBtn,
+#FloatingMiniPanel:vertical .arrowBtn {
+  width: 28px;
+  min-width: 28px;
+  max-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  max-height: 28px;
+  padding: 0px;
+  margin: 1px 4px;
+  border-radius: 6px;
+}
+
+#FloatingMiniPanel .extBtn .system-status-icon,
+#FloatingMiniPanel .extBtn .system-status-icon-2,
+#FloatingMiniPanel .arrowBtn .arrowIcon {
+  width: 16px;
+  height: 16px;
+  padding: 0px;
   -st-icon-style: symbolic !important;
 }
 
@@ -75,16 +103,6 @@
   padding: 8px 0px;
 }
 
-#FloatingMiniPanel:horizontal .extBtn,
-#FloatingMiniPanel:horizontal .btn.extBtn {
-  padding: 0px 4px;
-}
-
-#FloatingMiniPanel:vertical .extBtn,
-#FloatingMiniPanel:vertical .btn.extBtn {
-  padding: 2px 0px;
-}
-
 #FloatingMiniPanel:horizontal .messages-indicator {
   width: 16px;
   padding: 7px 0px;
@@ -101,6 +119,46 @@
 
 .popup-menu.panel-menu {
   margin-bottom: 0;
+}
+
+/* Windows-style Hidden Indicators Flyout */
+.hidden-menu-item {
+  padding: 0px !important;
+}
+
+.hidden-indicators-container {
+  padding: 6px;
+}
+
+.hidden-indicators-box {
+  padding: 2px;
+  spacing: 4px;
+}
+
+.hidden-indicators-box .extBtn {
+  width: 28px;
+  min-width: 28px;
+  max-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  max-height: 28px;
+  padding: 0px;
+  margin: 2px;
+  border-radius: 6px;
+}
+
+.hidden-indicators-box .system-status-icon,
+.hidden-indicators-box .system-status-icon-2 {
+  width: 16px;
+  height: 16px;
+  padding: 0px;
+  -st-icon-style: symbolic !important;
+}
+
+.hidden-empty-label {
+  padding: 8px 16px;
+  font-size: 11pt;
+  color: #aaaaaa;
 }
 
 /* Blur-my-shell integration styles */
@@ -130,27 +188,30 @@
   background-gradient-direction: none !important;
 }
 
-#FloatingMiniPanel.bms-blurred .button {
+#FloatingMiniPanel.bms-blurred .button,
+#FloatingMiniPanel.bms-blurred .arrowBtn {
   background-color: transparent !important;
   box-shadow: none !important;
   border: none !important;
 }
 
-#FloatingMiniPanel.bms-blurred .button:hover {
+#FloatingMiniPanel.bms-blurred .button:hover,
+#FloatingMiniPanel.bms-blurred .arrowBtn:hover {
   background-color: rgba(255, 255, 255, 0.12) !important;
 }
 
-#FloatingMiniPanel.bms-blurred .button:active {
+#FloatingMiniPanel.bms-blurred .button:active,
+#FloatingMiniPanel.bms-blurred .arrowBtn:active {
   background-color: rgba(255, 255, 255, 0.2) !important;
 }
 
 #FloatingMiniPanel.bms-blurred.bms-light-text,
 #FloatingMiniPanel.bms-blurred.bms-light-text StLabel,
-#FloatingMiniPanel.bms-blurred.bms-light-text .system-status-icon {
+#FloatingMiniPanel.bms-blurred.bms-light-text .system-status-icon,
+#FloatingMiniPanel.bms-blurred.bms-light-text .arrowIcon {
   color: #ffffff !important;
 }
 
 .qs-scroll-view {
   -st-vfade-offset: 24px;
 }
-

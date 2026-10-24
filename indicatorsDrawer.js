@@ -22,10 +22,12 @@
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
+import Meta from 'gi://Meta';
 import St from 'gi://St';
 
 import * as Config from 'resource:///org/gnome/shell/misc/config.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import * as Utils from './utils.js';
 
 const PANEL = Main.panel;
@@ -34,6 +36,7 @@ const STATUSAREA = PANEL.statusArea;
 const LEFTBOX = PANEL._leftBox;
 const CENTERBOX = PANEL._centerBox;
 const RIGHTBOX = PANEL._rightBox;
+const DISPLAY = global.display;
 
 const shellVersion = parseFloat(Config.PACKAGE_VERSION);
 
@@ -43,23 +46,80 @@ const Box = {
     RIGHT: 2,
 };
 
+function setCursor(type) {
+    try {
+        if (typeof global !== 'undefined' && global.stage && typeof global.stage.set_cursor_type === 'function') {
+            let cursorType = (type === 'move')
+                ? (Clutter.CursorType?.MOVE ?? Clutter.CursorType?.ALL_SCROLL ?? Clutter.CursorType?.DEFAULT ?? 0)
+                : (Clutter.CursorType?.DEFAULT ?? 0);
+            global.stage.set_cursor_type(cursorType);
+        } else if (DISPLAY && typeof DISPLAY.set_cursor === 'function' && typeof Meta !== 'undefined' && Meta?.Cursor) {
+            let cursor = Meta.Cursor.DEFAULT;
+            if (type === 'move') {
+                cursor = (shellVersion < 47) ? Meta.Cursor.MOVE_OR_RESIZE_WINDOW : Meta.Cursor.MOVE;
+            }
+            DISPLAY.set_cursor(cursor);
+        }
+    } catch (e) {
+        // ignore cursor setting errors
+    }
+}
+
+function isCoordInsideActor(actor, x, y) {
+    if (!actor || !actor.mapped || !actor.visible) return false;
+    let [ax, ay] = actor.get_transformed_position ? actor.get_transformed_position() : [actor.x, actor.y];
+    let [aw, ah] = actor.get_transformed_size ? actor.get_transformed_size() : [actor.width, actor.height];
+    return (x >= ax && x <= ax + aw && y >= ay && y <= ay + ah);
+}
+
+function getIndicatorId(ind, role) {
+    if (ind?._indicator?.id) {
+        return ind._indicator.id;
+    }
+    if (ind?.uniqueId) {
+        return ind.uniqueId;
+    }
+    if (role && !role.startsWith('appindicator')) {
+        return role;
+    }
+    if (ind?._indicator?.busName) {
+        return ind._indicator.busName;
+    }
+    if (role) {
+        return role.replace(/:\d+\.\d+/, '').replace(/StatusNotifierItem-\d+-\d+/, 'StatusNotifierItem');
+    }
+    return '';
+}
+
 const IndicatorClone = GObject.registerClass(
     class IndicatorClone extends St.BoxLayout {
-        constructor(parent, ind, role, box, pos, always) {
+        constructor(parent, ind, role, box, pos) {
             super({
                 name: 'extBtn',
                 reactive: true,
                 track_hover: true,
                 style_class: 'button btn extBtn',
+                x_align: Clutter.ActorAlign.CENTER,
+                y_align: Clutter.ActorAlign.CENTER,
             });
 
-            this._parent = parent;
-
+            this._parent = parent; // IndicatorsDrawer
+            this._fmpParent = this._parent?._parent; // FloatingMiniPanel
             this._ind = ind;
             this._role = role;
             this._box = box;
             this._pos = pos;
-            this._always = always;
+            this._id = getIndicatorId(this._ind, this._role);
+            this._isHidden = false;
+
+            this._isPressed = false;
+            this._isDragging = false;
+            this._pressX = 0;
+            this._pressY = 0;
+            this._dragClone = null;
+            this._grab = null;
+            this._dragTimer = null;
+            this._arrowHoverTimer = null;
 
             this._indChilds = [];
             this._indContainers = [];
@@ -84,11 +144,8 @@ const IndicatorClone = GObject.registerClass(
                 this.orientStr,
                 GObject.BindingFlags.SYNC_CREATE,
                 (binding, value) => {
-                    // Adjust indicators text for horizontal / vertical
-                    // otherwise it would take some time until this happens,
-                    // depending on update frequency and/or value changes.
                     for (let c of this._childs) {
-                        if (c.text) {
+                        if (c?.text) {
                             if (value) {
                                 c.text = c.text.replace(/\s/g, '\n');
                             } else {
@@ -121,13 +178,10 @@ const IndicatorClone = GObject.registerClass(
                     },
                     this
                 );
-            } else {
-                // Support for ArcMenu
-                // If enabled during runtime overview has to be toggled
-                // once to make the sourceActor work (I don't know why)!
-                if (this._role === 'ArcMenu') {
-                    this._indActor = this._ind.arcMenu.sourceActor;
-                    this._indArrow = this._ind.arcMenu.arrowAlignment;
+            } else if (this._role === 'ArcMenu') {
+                this._indActor = this._ind.arcMenu?.sourceActor;
+                this._indArrow = this._ind.arcMenu?.arrowAlignment;
+                if (this._ind.arcMenu) {
                     this._ind.arcMenu.connectObject(
                         'open-state-changed',
                         (menu, isOpen) => {
@@ -143,6 +197,8 @@ const IndicatorClone = GObject.registerClass(
                         },
                         this
                     );
+                }
+                if (this._ind.arcMenuContextMenu) {
                     this._ind.arcMenuContextMenu.connectObject(
                         'open-state-changed',
                         (menu, isOpen) => {
@@ -180,68 +236,116 @@ const IndicatorClone = GObject.registerClass(
                 }
             });
 
-            this._posConId = this._parent.connect('notify::position', () => {
-                if (this.mapped) {
-                    if (this._ind.menu) {
-                        Utils.updateMenuConstraints(this, this._ind.menu);
+            if (this._fmpParent) {
+                this._posConId = this._fmpParent.connect('notify::position', () => {
+                    if (this.mapped) {
+                        if (this._ind.menu) {
+                            Utils.updateMenuConstraints(this, this._ind.menu);
+                        }
+                        if (this._ind.arcMenu) {
+                            Utils.updateMenuConstraints(this, this._ind.arcMenu);
+                            Utils.updateMenuConstraints(this, this._ind.arcMenuContextMenu);
+                        }
                     }
-                    if (this._ind.arcMenu) {
-                        Utils.updateMenuConstraints(this, this._ind.arcMenu);
-                        Utils.updateMenuConstraints(this, this._ind.arcMenuContextMenu);
-                    }
+                });
+            }
+
+            // Pointer actions: click, drag-and-drop, and middle-click toggle ---
+            this.connect('button-press-event', (obj, event) => {
+                let button = event.get_button();
+
+                if (button === Clutter.BUTTON_MIDDLE) {
+                    this._parent.toggleIndicator(this);
+                    return Clutter.EVENT_STOP;
                 }
+
+                if (button === Clutter.BUTTON_SECONDARY) {
+                    this._activateIndicator(event);
+                    return Clutter.EVENT_STOP;
+                }
+
+                if (button === Clutter.BUTTON_PRIMARY) {
+                    let [x, y] = event.get_coords();
+                    this._pressX = x;
+                    this._pressY = y;
+                    this._isPressed = true;
+                    this._isDragging = false;
+
+                    // Press-and-hold timer (180ms) for drag pickup
+                    if (this._dragTimer) {
+                        GLib.Source.remove(this._dragTimer);
+                        this._dragTimer = null;
+                    }
+                    this._dragTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 180, () => {
+                        this._dragTimer = null;
+                        if (this._isPressed && !this._isDragging) {
+                            this._startDrag(this._pressX, this._pressY);
+                        }
+                        return GLib.SOURCE_REMOVE;
+                    });
+
+                    return Clutter.EVENT_STOP;
+                }
+
+                return Clutter.EVENT_PROPAGATE;
             });
 
-            // Connect actions -------------------------------------------------
-            this.connect('button-press-event', (obj, event) => {
-                if (this._ind?.menu) {
-                    Utils.updateMenuConstraints(this, this._ind.menu);
-                }
-                if (this._ind?.arcMenu) {
-                    Utils.updateMenuConstraints(this, this._ind.arcMenu);
-                    Utils.updateMenuConstraints(this, this._ind.arcMenuContextMenu);
-                }
-                if (event.get_button() === 2) {
-                    // AppIndicator roles are dynamic, so we cant handle them!
-                    if (!this._role.startsWith('appindicator'))
-                        this._parent.makeAlways(this);
-                } else {
-                    if (!this._role.startsWith('appindicator')) {
-                        this._ind.emit('event', event);
-                    } else {
-                        this._ind.vfunc_button_press_event(event);
+            this.connect('motion-event', (obj, event) => {
+                if (!this._isPressed)
+                    return Clutter.EVENT_PROPAGATE;
+
+                let [x, y] = event.get_coords();
+                let dist = Math.hypot(x - this._pressX, y - this._pressY);
+
+                if (!this._isDragging && dist > 6) {
+                    if (this._dragTimer) {
+                        GLib.Source.remove(this._dragTimer);
+                        this._dragTimer = null;
                     }
+                    this._startDrag(x, y);
                 }
-                return Clutter.EVENT_STOP;
+
+                if (this._isDragging) {
+                    this._updateDrag(x, y);
+                    return Clutter.EVENT_STOP;
+                }
+
+                return Clutter.EVENT_PROPAGATE;
             });
 
             this.connect('button-release-event', (obj, event) => {
-                if (!this._role.startsWith('appindicator')) {
-                    this._ind.emit('event', event);
-                } else {
-                    // No Support for Shell.TrayIcon
-                    // if (this._indContainers[0] instanceof Shell.TrayIcon) {
-                    // this._indContainer[0].firstChild.click(event);
-                    // }
+                let button = event.get_button();
+
+                if (button === Clutter.BUTTON_PRIMARY) {
+                    if (this._dragTimer) {
+                        GLib.Source.remove(this._dragTimer);
+                        this._dragTimer = null;
+                    }
+
+                    if (this._isDragging) {
+                        let [x, y] = event.get_coords();
+                        this._endDrag(x, y);
+                        this._isDragging = false;
+                        this._isPressed = false;
+                        return Clutter.EVENT_STOP;
+                    } else if (this._isPressed) {
+                        this._isPressed = false;
+                        // Click! Activate indicator directly
+                        this._activateIndicator(event);
+                        return Clutter.EVENT_STOP;
+                    }
                 }
-                return Clutter.EVENT_STOP;
+
+                return Clutter.EVENT_PROPAGATE;
             });
 
-            // Get the indicator's childs --------------------------------------
-            // Wait for AppIndicators to settle! Not needed for normal
-            // Extension Indicators, but for some like Freon. (ca. 500ms)
-
-            if (this._timeoutId) {
-                GLib.Source.remove(this._timeoutId);
-                this._timeoutId = null;
-            }
+            // Settle timeout for indicators (ca. 500ms) -----------------------
             let timeout = 0;
             if (
                 this._role.startsWith('appindicator') ||
                 this._role.startsWith('freonMenu')
             ) {
                 timeout = 500;
-                // PanelBox.visible is important for AppIndicators to show up
                 PANELBOX.visible = true;
             }
             this._timeoutId = GLib.timeout_add(
@@ -251,6 +355,14 @@ const IndicatorClone = GObject.registerClass(
                     this._timeoutId = null;
                     if (!this._ind || !this._containers || !this._indContainers || !this.get_parent())
                         return GLib.SOURCE_REMOVE;
+
+                    this._id = getIndicatorId(this._ind, this._role);
+                    if (this._parent?._isIndicatorHidden?.(this)) {
+                        if (!this._isHidden) {
+                            this._parent.hideIndicator(this);
+                        }
+                    }
+
                     this._containers.push(this);
                     this._indContainers.push(this._ind);
                     this._findIndChilds(
@@ -262,27 +374,132 @@ const IndicatorClone = GObject.registerClass(
             );
         }
 
+        _activateIndicator(event) {
+            if (!this._ind) return;
+
+            // If indicator has a shell menu, update constraints and toggle it
+            if (this._ind.menu) {
+                Utils.updateMenuConstraints(this, this._ind.menu);
+                if (this._isHidden && this._parent?.closeFlyout) {
+                    this._parent.closeFlyout();
+                }
+                this._ind.menu.toggle();
+                return;
+            }
+
+            if (this._ind.arcMenu) {
+                Utils.updateMenuConstraints(this, this._ind.arcMenu);
+                if (this._isHidden && this._parent?.closeFlyout) {
+                    this._parent.closeFlyout();
+                }
+                this._ind.arcMenu.toggle();
+                return;
+            }
+
+            try {
+                if (this._isHidden && this._parent?.closeFlyout) {
+                    this._parent.closeFlyout();
+                }
+                if (typeof this._ind.vfunc_button_press_event === 'function') {
+                    this._ind.vfunc_button_press_event(event);
+                } else {
+                    this._ind.emit('event', event);
+                }
+            } catch (e) {
+                // ignore
+            }
+        }
+
+        _startDrag(x, y) {
+            this._isDragging = true;
+            this._grab = Main.pushModal(this);
+            this.opacity = 120;
+
+            try {
+                this._dragClone = new Clutter.Clone({
+                    source: this,
+                    opacity: 220,
+                });
+                Main.uiGroup.add_child(this._dragClone);
+                let [w, h] = this.get_transformed_size ? this.get_transformed_size() : [this.width, this.height];
+                this._dragOffsetX = (w > 0) ? (w / 2) : 14;
+                this._dragOffsetY = (h > 0) ? (h / 2) : 14;
+                this._dragClone.set_position(
+                    Math.floor(x - this._dragOffsetX),
+                    Math.floor(y - this._dragOffsetY)
+                );
+            } catch (e) {
+                // ignore
+            }
+
+            setCursor('move');
+        }
+
+        _updateDrag(x, y) {
+            if (this._dragClone) {
+                this._dragClone.set_position(
+                    Math.floor(x - this._dragOffsetX),
+                    Math.floor(y - this._dragOffsetY)
+                );
+            }
+
+            if (this._parent?._isInsideArrow?.(x, y)) {
+                if (!this._arrowHoverTimer && !this._parent._flyout?.isOpen) {
+                    this._arrowHoverTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 300, () => {
+                        this._parent.openFlyout();
+                        this._arrowHoverTimer = null;
+                        return GLib.SOURCE_REMOVE;
+                    });
+                }
+            } else if (this._arrowHoverTimer) {
+                GLib.Source.remove(this._arrowHoverTimer);
+                this._arrowHoverTimer = null;
+            }
+        }
+
+        _endDrag(x, y) {
+            if (this._arrowHoverTimer) {
+                GLib.Source.remove(this._arrowHoverTimer);
+                this._arrowHoverTimer = null;
+            }
+
+            if (this._dragClone) {
+                Main.uiGroup.remove_child(this._dragClone);
+                this._dragClone.destroy();
+                this._dragClone = null;
+            }
+
+            if (this._grab) {
+                Main.popModal(this._grab);
+                this._grab = null;
+            }
+
+            this.opacity = 255;
+            setCursor('default');
+
+            if (this._parent) {
+                this._parent.handleDrop(this, x, y);
+            }
+        }
+
         // Find indicator childs and add containers recursively ----------------
         _findIndChilds(indContainer, container) {
             let childs = indContainer.get_children();
             for (let c = 0; c < childs.length; c++) {
-                // Maybe test only for St.BoxLayout?
                 if (
                     childs[c].get_n_children() > 0 &&
                     !(childs[c] instanceof Clutter.Content) &&
                     !(childs[c] instanceof St.Icon) &&
                     !(childs[c] instanceof St.Label)
                 ) {
-                    // Add containers to this, bind properties and
-                    // connect signals
                     this._indContainers.push(childs[c]);
-                    // Index 'i' is equal for indContainers and containers,
-                    // so we only have to get it once and use it for both!
                     let i = this._indContainers.length - 1;
                     this._containers.push(
                         new St.BoxLayout({
-                            x_align: Clutter.ActorAlign.FILL,
-                            y_align: Clutter.ActorAlign.FILL,
+                            x_align: Clutter.ActorAlign.CENTER,
+                            y_align: Clutter.ActorAlign.CENTER,
+                            x_expand: true,
+                            y_expand: true,
                         })
                     );
 
@@ -329,12 +546,11 @@ const IndicatorClone = GObject.registerClass(
                         this._containers[i]
                     );
                 } else {
-                    // No support for Shell.TrayIcon
                     if (childs[c].source) {
-                        this._parent._alwaysBox.remove_child(this);
+                        if (this.get_parent()) {
+                            this.get_parent().remove_child(this);
+                        }
                     } else {
-                        // Double check we found what we want and add it
-                        // to the corresponding container.
                         if (
                             childs[c].content ||
                             childs[c].gicon ||
@@ -354,21 +570,14 @@ const IndicatorClone = GObject.registerClass(
             this._indChilds.push(child);
             let j = this._indChilds.indexOf(child);
 
-            // No support for Shell.TrayIcon
-            // Clutter.Actor (Legacy AppIndicator)
-            //if (child.source) {
-            //this._childs[j] = new Clutter.Clone({
-            //    name: 'clone' + j.toString(),
-            //    source: this._indChilds[j],
-            //});
-            //container.add_style_class_name('clone');
-            //container.add_child(this._childs[j]);
-            //}
-
             // Clutter.Actor (AppIndicator)
             if (child.content) {
                 this._childs[j] = new St.Icon({
                     style_class: 'system-status-icon',
+                    x_align: Clutter.ActorAlign.CENTER,
+                    y_align: Clutter.ActorAlign.CENTER,
+                    x_expand: true,
+                    y_expand: true,
                 });
                 container.add_child(this._childs[j]);
                 this._indChilds[j].bind_property(
@@ -387,20 +596,24 @@ const IndicatorClone = GObject.registerClass(
 
             // St.Icon (Extension or AppIndicator)
             if (child.gicon) {
-                // HACK for not realized St.Labels e.g. System Monitor
-                // to realize them, so a binding can be established.
                 if (child.get_next_sibling() instanceof St.Label)
                     child.get_next_sibling().set_text('...');
 
                 if (child.get_previous_sibling() instanceof St.Label) {
-                    // Multiple icons with text in one container e.g. 'Vitals'
                     this._childs[j] = new St.Icon({
                         style_class: 'system-status-icon-2',
+                        x_align: Clutter.ActorAlign.CENTER,
+                        y_align: Clutter.ActorAlign.CENTER,
+                        x_expand: true,
+                        y_expand: true,
                     });
                 } else {
-                    // Single icon eventually with text in one container
                     this._childs[j] = new St.Icon({
                         style_class: 'system-status-icon',
+                        x_align: Clutter.ActorAlign.CENTER,
+                        y_align: Clutter.ActorAlign.CENTER,
+                        x_expand: true,
+                        y_expand: true,
                     });
                 }
                 container.add_child(this._childs[j]);
@@ -461,8 +674,6 @@ const IndicatorClone = GObject.registerClass(
                     this._childs.splice(j, 1);
                     this._indChilds[j] = null;
                     this._indChilds.splice(j, 1);
-
-                    //if (container.get_n_children() === 0) ... remove ?!
                 }
             }
         }
@@ -477,27 +688,53 @@ const IndicatorClone = GObject.registerClass(
                 } else {
                     Utils.restoreMenu(this._ind.menu, this._indActor, this._indArrow);
                 }
-            } else {
-                // Support for ArcMenu
+            } else if (this._role === 'ArcMenu') {
                 if (this._ind.arcMenu) {
                     if (on) {
                         this._ind.arcMenu.sourceActor = this;
                         this._ind.arcMenu._arrowAlignment = 0.5;
-                        this._ind.arcMenuContextMenu.sourceActor = this;
-                        this._ind.arcMenuContextMenu._arrowAlignment = 0.5;
+                        if (this._ind.arcMenuContextMenu) {
+                            this._ind.arcMenuContextMenu.sourceActor = this;
+                            this._ind.arcMenuContextMenu._arrowAlignment = 0.5;
+                        }
                         Utils.updateMenuConstraints(this, this._ind.arcMenu);
-                        Utils.updateMenuConstraints(this, this._ind.arcMenuContextMenu);
+                        if (this._ind.arcMenuContextMenu) {
+                            Utils.updateMenuConstraints(this, this._ind.arcMenuContextMenu);
+                        }
                     } else {
                         Utils.restoreMenu(this._ind.arcMenu, this._indActor, this._indArrow);
-                        Utils.restoreMenu(this._ind.arcMenuContextMenu, this._indActor, this._indArrow);
+                        if (this._ind.arcMenuContextMenu) {
+                            Utils.restoreMenu(this._ind.arcMenuContextMenu, this._indActor, this._indArrow);
+                        }
                     }
                 }
             }
         }
 
         destroy() {
-            if (this._posConId && this._parent) {
-                this._parent.disconnect(this._posConId);
+            if (this._dragTimer) {
+                GLib.Source.remove(this._dragTimer);
+                this._dragTimer = null;
+            }
+
+            if (this._arrowHoverTimer) {
+                GLib.Source.remove(this._arrowHoverTimer);
+                this._arrowHoverTimer = null;
+            }
+
+            if (this._dragClone) {
+                Main.uiGroup.remove_child(this._dragClone);
+                this._dragClone.destroy();
+                this._dragClone = null;
+            }
+
+            if (this._grab) {
+                Main.popModal(this._grab);
+                this._grab = null;
+            }
+
+            if (this._posConId && this._fmpParent) {
+                this._fmpParent.disconnect(this._posConId);
                 this._posConId = null;
             }
 
@@ -518,12 +755,15 @@ const IndicatorClone = GObject.registerClass(
 
             this._toggleMenuProps(false);
 
+            this._parent?._updateArrowVisibility?.();
+            this._parent?._updateEmptyLabel?.();
+
             this._parent = null;
+            this._fmpParent = null;
             this._ind = null;
             this._role = null;
             this._box = null;
             this._pos = null;
-            this._always = false;
 
             this._indChilds = null;
             this._indContainers = null;
@@ -542,88 +782,77 @@ export const IndicatorsDrawer = GObject.registerClass(
         constructor(parent) {
             super({
                 name: 'IndicatorsDrawer',
+                x_align: Clutter.ActorAlign.CENTER,
+                y_align: Clutter.ActorAlign.CENTER,
             });
 
-            this._parent = parent;
-
+            this._parent = parent; // FloatingMiniPanel
             this._sets = this._parent._sets;
-            this._open = this._sets.get_boolean('open');
-            this._always = this._sets.get_strv('always');
-
+            this._hiddenList = this._sets.get_strv('hidden-indicators') || [];
             this._cloned = [];
 
-            // Drawer Box ------------------------------------------------------
-            this._drawerBox = new St.BoxLayout({
-                name: 'drawerBox',
+            // 1. Arrow Button (Chevron facing screen center) ------------------
+            this._arrowBtn = new St.BoxLayout({
+                name: 'arrowBtn',
+                reactive: true,
+                track_hover: true,
+                style_class: 'button btn extBtn arrowBtn',
+                x_align: Clutter.ActorAlign.CENTER,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            this._arrowBtn._parent = this._parent; // Ensure Utils.getMenuArrowSide finds FloatingMiniPanel
+
+            this._arrowIcon = new St.Icon({
+                style_class: 'system-status-icon arrowIcon',
+                icon_name: 'pan-up-symbolic',
+                x_align: Clutter.ActorAlign.CENTER,
+                y_align: Clutter.ActorAlign.CENTER,
                 x_expand: true,
-                visible: this._open,
+                y_expand: true,
             });
+            this._arrowBtn.add_child(this._arrowIcon);
+            this.add_child(this._arrowBtn);
 
-            this.add_child(this._drawerBox);
-
-            // Content Box -----------------------------------------------------
-            this._contentBox = new St.BoxLayout({
-                name: 'contentBox',
-                x_expand: true,
-            });
-
-            this._drawerBox.add_child(this._contentBox);
-
-            // Divider Box -----------------------------------------------------
-            this._dividerBox = new St.BoxLayout({
-                name: 'dividerBox',
-                width: 1,
-                style_class: 'divider',
-            });
-
-            this._drawerBox.add_child(this._dividerBox);
-
-            // Always Box ------------------------------------------------------
+            // 2. Always Box (Visible indicators on panel) ---------------------
             this._alwaysBox = new St.BoxLayout({
                 name: 'alwaysBox',
-                x_expand: true,
+                x_align: Clutter.ActorAlign.CENTER,
+                y_align: Clutter.ActorAlign.CENTER,
             });
-
             this.add_child(this._alwaysBox);
 
-            // Show DividerBox between DrawerBox and AlwaysBox only if
-            // ContentBox and AlwaysBox are not empty.
-            this._alwaysBox.bind_property_full(
-                'width',
-                this._dividerBox,
-                'opacity',
-                GObject.BindingFlags.DEFAULT,
-                () => {
-                    if (
-                        this._alwaysBox.width > 1 &&
-                        this._contentBox.width > 1
-                    ) {
-                        return [Number, 255];
-                    } else {
-                        return [Number, 0];
-                    }
-                },
-                null
-            );
+            // 3. Hidden Indicators Overflow Flyout ----------------------------
+            this._flyout = new PopupMenu.PopupMenu(this._arrowBtn, 0.5, St.Side.BOTTOM);
+            Main.uiGroup.add_child(this._flyout.actor);
+            // Use dedicated PopupMenuManager so panel indicator hovers don't close the flyout
+            this._menuManager = new PopupMenu.PopupMenuManager(this);
+            this._menuManager.addMenu(this._flyout);
+            this._flyout.actor.hide();
 
-            // START CODE VERTICAL
-            this._alwaysBox.bind_property_full(
-                'height',
-                this._dividerBox,
-                'opacity',
-                GObject.BindingFlags.DEFAULT,
-                () => {
-                    if (
-                        this._alwaysBox.height > 1 &&
-                        this._contentBox.height > 1
-                    ) {
-                        return [Number, 255];
-                    } else {
-                        return [Number, 0];
-                    }
-                },
-                null
-            );
+            let flyoutItem = new PopupMenu.PopupBaseMenuItem({
+                reactive: false,
+                can_focus: false,
+                style_class: 'hidden-menu-item',
+            });
+            this._flyoutContainer = new St.BoxLayout({
+                vertical: true,
+                style_class: 'hidden-indicators-container',
+            });
+            this._emptyLabel = new St.Label({
+                text: 'Drag icons here to hide',
+                style_class: 'hidden-empty-label',
+            });
+            this._hiddenBox = new St.BoxLayout({
+                name: 'hiddenBox',
+                style_class: 'hidden-indicators-box',
+                x_align: Clutter.ActorAlign.CENTER,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+
+            this._flyoutContainer.add_child(this._emptyLabel);
+            this._flyoutContainer.add_child(this._hiddenBox);
+            flyoutItem.add_child(this._flyoutContainer);
+            this._flyout.addMenuItem(flyoutItem);
 
             // START CODE VERTICAL
             this.orientStr = shellVersion > 47 ? 'orientation' : 'vertical';
@@ -634,23 +863,47 @@ export const IndicatorsDrawer = GObject.registerClass(
                 this.orientStr,
                 GObject.BindingFlags.SYNC_CREATE,
                 (binding, value) => {
-                    this._drawerBox[this.orientStr] = value;
-                    this._contentBox[this.orientStr] = value;
-                    this._dividerBox[this.orientStr] = value;
+                    this._arrowBtn[this.orientStr] = value;
                     this._alwaysBox[this.orientStr] = value;
-                    // Important for orientation change with open drawer!
-                    this._old_x = this._parent.x;
-                    this._old_y = this._parent.y;
+                    this._hiddenBox[this.orientStr] = value;
+                    this._updateArrowDirection();
                     return [binding, value];
                 },
                 null
             );
 
-            // Start collecting Indicators -------------------------------------
-            let orgInds = null;
+            this._posConId = this._parent.connect('notify::position', () => {
+                this._updateArrowDirection();
+                if (this._flyout?.isOpen) {
+                    Utils.updateMenuConstraints(this._arrowBtn, this._flyout);
+                }
+            });
 
-            // Clone indicators which are already realized
-            orgInds = LEFTBOX.get_children();
+            this._flyout.connectObject(
+                'open-state-changed',
+                (menu, isOpen) => {
+                    if (isOpen) {
+                        Utils.updateMenuConstraints(this._arrowBtn, this._flyout);
+                    }
+                    this._updateArrowDirection();
+                },
+                this
+            );
+
+            this._arrowBtn.connect('button-press-event', (actor, event) => {
+                if (event.get_button() === Clutter.BUTTON_PRIMARY) {
+                    this.toggleFlyout();
+                    return Clutter.EVENT_STOP;
+                }
+                return Clutter.EVENT_PROPAGATE;
+            });
+
+            this._drawerChangedId = this._sets.connect('changed::show-drawer', () => {
+                this._updateArrowVisibility();
+            });
+
+            // Start collecting Indicators -------------------------------------
+            let orgInds = LEFTBOX.get_children();
             for (let i = 0; i < orgInds.length; i++) {
                 this._cloneIndicators(Box.LEFT, orgInds[i]);
             }
@@ -676,19 +929,92 @@ export const IndicatorsDrawer = GObject.registerClass(
                 this._cloneIndicators(Box.RIGHT, child);
                 return Clutter.EVENT_STOP;
             });
+
+            this._updateArrowVisibility();
+            this._updateEmptyLabel();
         }
 
-        // Helper function to insert child into box at correct position.
+        _updateArrowDirection() {
+            if (!this._arrowIcon) return;
+            let side = Utils.getMenuArrowSide(this._arrowBtn || this);
+            let isOpen = Boolean(this._flyout && this._flyout.isOpen);
+
+            // In closed state, arrow points toward screen center:
+            // St.Side.BOTTOM (bottom dock) -> pan-up-symbolic
+            // St.Side.TOP (top dock) -> pan-down-symbolic
+            // St.Side.RIGHT (right dock) -> pan-start-symbolic
+            // St.Side.LEFT (left dock) -> pan-end-symbolic
+            let iconName = 'pan-up-symbolic';
+            if (side === St.Side.BOTTOM) {
+                iconName = isOpen ? 'pan-down-symbolic' : 'pan-up-symbolic';
+            } else if (side === St.Side.TOP) {
+                iconName = isOpen ? 'pan-up-symbolic' : 'pan-down-symbolic';
+            } else if (side === St.Side.RIGHT) {
+                iconName = isOpen ? 'pan-end-symbolic' : 'pan-start-symbolic';
+            } else if (side === St.Side.LEFT) {
+                iconName = isOpen ? 'pan-start-symbolic' : 'pan-end-symbolic';
+            }
+
+            this._arrowIcon.icon_name = iconName;
+        }
+
+        _updateArrowVisibility() {
+            let totalInds = this._alwaysBox.get_n_children() + this._hiddenBox.get_n_children();
+            let showDrawer = this._sets.get_boolean('show-drawer');
+            this._arrowBtn.visible = Boolean(showDrawer && totalInds > 0);
+            this._updateArrowDirection();
+        }
+
+        _updateEmptyLabel() {
+            let hasHidden = this._hiddenBox.get_n_children() > 0;
+            this._emptyLabel.visible = !hasHidden;
+            this._hiddenBox.visible = hasHidden;
+        }
+
+        closeFlyout() {
+            if (this._flyout && this._flyout.isOpen) {
+                this._flyout.close(true);
+                this._updateArrowDirection();
+            }
+        }
+
+        openFlyout() {
+            if (!this._flyout) return;
+            Utils.updateMenuConstraints(this._arrowBtn, this._flyout);
+            this._flyout.open(true);
+            this._updateArrowDirection();
+        }
+
+        toggleFlyout() {
+            if (!this._flyout) return;
+            if (this._flyout.isOpen) {
+                this.closeFlyout();
+            } else {
+                this.openFlyout();
+            }
+        }
+
+        // Backward compatibility for controlButton
+        toggle() {
+            this.toggleFlyout();
+        }
+
+        // Helper function to insert child into box sorted by _pos
         _insertCloneIntoBox(clone, box) {
             let childs = box.get_children();
-            if (childs.length === 0 || box.lastChild._pos < clone._pos) {
+            if (childs.length === 0 || box.lastChild?._pos === undefined || box.lastChild._pos < clone._pos) {
                 box.add_child(clone);
             } else {
+                let inserted = false;
                 for (let c = 0; c < childs.length; c++) {
-                    if (childs[c]._pos > clone._pos) {
+                    if (childs[c]._pos !== undefined && childs[c]._pos > clone._pos) {
                         box.insert_child_at_index(clone, c);
+                        inserted = true;
                         break;
                     }
+                }
+                if (!inserted) {
+                    box.add_child(clone);
                 }
             }
             if (clone.get_parent() !== box) box.add_child(clone);
@@ -697,8 +1023,6 @@ export const IndicatorsDrawer = GObject.registerClass(
         // Start cloning indicators --------------------------------------------
         _cloneIndicators(box, child) {
             if (
-                // this._ind is null error of user 'from the 51st state'!
-                // I am not sure if this is realy neccessary!
                 child.firstChild &&
                 !this._cloned.includes(child.firstChild) &&
                 child.firstChild !== STATUSAREA['activities'] &&
@@ -707,7 +1031,7 @@ export const IndicatorsDrawer = GObject.registerClass(
             ) {
                 this._cloned.push(child.firstChild);
 
-                // Calculate real position of indicator in panel and ensure.
+                // Calculate real position of indicator in panel
                 let l = LEFTBOX.get_children();
                 let c = CENTERBOX.get_children();
                 let r = RIGHTBOX.get_children();
@@ -719,21 +1043,15 @@ export const IndicatorsDrawer = GObject.registerClass(
                     1
                 );
                 let pos = a.indexOf(child);
-                let clones = this._contentBox.get_children();
-                for (let clone of clones)
-                    clone._pos = a.indexOf(clone._ind.get_parent());
 
                 // Get indicator role from statusarea
                 let role = '';
-                for (role in STATUSAREA) {
-                    if (child.firstChild === STATUSAREA[role]) {
+                for (let rName in STATUSAREA) {
+                    if (child.firstChild === STATUSAREA[rName]) {
+                        role = rName;
                         break;
                     }
                 }
-
-                // Get 'always' state of indicator
-                let alwaysRoles = this._sets.get_strv('always');
-                let always = alwaysRoles.includes(role);
 
                 // Create clone of indicator
                 let clone = new IndicatorClone(
@@ -741,62 +1059,144 @@ export const IndicatorsDrawer = GObject.registerClass(
                     child.firstChild,
                     role,
                     box,
-                    pos,
-                    always
+                    pos
                 );
 
-                // Roles of AppIndicators are dynamic, so I show them always.
-                // I did not find any stable value in all checked apps!!!
-                // If this is unwanted someone can disable AppIndicators support
-                // in Gnome Extension Managers, or if possible in the app!
-                if (always || role.startsWith('appindicator')) {
-                    this._insertCloneIntoBox(clone, this._alwaysBox);
+                if (this._isIndicatorHidden(clone)) {
+                    clone._isHidden = true;
+                    this._insertCloneIntoBox(clone, this._hiddenBox);
                 } else {
-                    this._insertCloneIntoBox(clone, this._contentBox);
+                    clone._isHidden = false;
+                    this._insertCloneIntoBox(clone, this._alwaysBox);
+                }
+
+                this._updateArrowVisibility();
+                this._updateEmptyLabel();
+            }
+        }
+
+        _isIndicatorHidden(clone) {
+            if (!this._hiddenList || this._hiddenList.length === 0)
+                return false;
+            let id = clone._id;
+            if (id && this._hiddenList.includes(id))
+                return true;
+            if (clone._role && this._hiddenList.includes(clone._role))
+                return true;
+            return false;
+        }
+
+        hideIndicator(clone) {
+            if (!clone) return;
+            if (clone.get_parent() === this._hiddenBox) return;
+
+            if (clone.get_parent()) {
+                clone.get_parent().remove_child(clone);
+            }
+            this._insertCloneIntoBox(clone, this._hiddenBox);
+            clone._isHidden = true;
+
+            let id = clone._id || clone._role;
+            if (id && !this._hiddenList.includes(id)) {
+                this._hiddenList.push(id);
+                this._sets.set_strv('hidden-indicators', this._hiddenList);
+            }
+
+            this._updateArrowVisibility();
+            this._updateEmptyLabel();
+        }
+
+        showIndicator(clone) {
+            if (!clone) return;
+            if (clone.get_parent() === this._alwaysBox) return;
+
+            if (clone.get_parent()) {
+                clone.get_parent().remove_child(clone);
+            }
+            this._insertCloneIntoBox(clone, this._alwaysBox);
+            clone._isHidden = false;
+
+            let ids = [clone._id, clone._role].filter(Boolean);
+            let changed = false;
+            for (let id of ids) {
+                let idx = this._hiddenList.indexOf(id);
+                if (idx >= 0) {
+                    this._hiddenList.splice(idx, 1);
+                    changed = true;
+                }
+            }
+            if (changed) {
+                this._sets.set_strv('hidden-indicators', this._hiddenList);
+            }
+
+            this._updateArrowVisibility();
+            this._updateEmptyLabel();
+        }
+
+        toggleIndicator(clone) {
+            if (clone._isHidden) {
+                this.showIndicator(clone);
+            } else {
+                this.hideIndicator(clone);
+            }
+        }
+
+        handleDrop(clone, x, y) {
+            let insideFlyout = this._isInsideFlyout(x, y);
+            let insideArrow = this._isInsideArrow(x, y);
+            let insidePanel = this._isInsidePanel(x, y);
+
+            if (clone._isHidden) {
+                if (insidePanel || insideArrow || !insideFlyout) {
+                    this.showIndicator(clone);
+                }
+            } else {
+                if (insideFlyout || insideArrow) {
+                    this.hideIndicator(clone);
                 }
             }
         }
 
-        // Open / close Drawer Box ---------------------------------------------
-        toggle() {
-            if (this._drawerBox.visible) {
-                this._drawerBox.visible = false;
-                if (
-                    !(
-                        this._parent.x !== this._old_x &&
-                        this._parent.y !== this._old_y
-                    )
-                ) {
-                    this._parent.x = this._old_x;
-                    this._parent.y = this._old_y;
-                }
-                this._sets.set_boolean('open', false);
-            } else {
-                this._old_x = this._parent.x;
-                this._old_y = this._parent.y;
-                this._drawerBox.visible = true;
-                this._sets.set_boolean('open', true);
-            }
+        _isInsideArrow(x, y) {
+            return isCoordInsideActor(this._arrowBtn, x, y);
         }
 
-        // Move clones to Always Box and vice versa ----------------------------
-        makeAlways(clone) {
-            if (clone._always) {
-                this._alwaysBox.remove_child(clone);
-                this._insertCloneIntoBox(clone, this._contentBox);
-                this._always.splice(this._always.indexOf(clone._role), 1);
-            } else {
-                this._contentBox.remove_child(clone);
-                this._insertCloneIntoBox(clone, this._alwaysBox);
-                this._always.push(clone._role);
-            }
-            this._drawerBox.width = -1;
-            clone._always = !clone._always;
-            this._sets.set_strv('always', this._always);
+        _isInsideFlyout(x, y) {
+            return isCoordInsideActor(this._flyout?.actor, x, y);
+        }
+
+        _isInsidePanel(x, y) {
+            return isCoordInsideActor(this._parent, x, y);
         }
 
         destroy() {
+            if (this._drawerChangedId) {
+                this._sets.disconnect(this._drawerChangedId);
+                this._drawerChangedId = null;
+            }
+
+            if (this._posConId && this._parent) {
+                this._parent.disconnect(this._posConId);
+                this._posConId = null;
+            }
+
+            if (this._menuManager) {
+                if (this._flyout) {
+                    this._menuManager.removeMenu(this._flyout);
+                }
+                this._menuManager = null;
+            }
+
+            if (this._flyout) {
+                if (this._flyout._boxPointer) {
+                    Utils.unhookBoxPointer(this._flyout._boxPointer);
+                }
+                this._flyout.destroy();
+                this._flyout = null;
+            }
+
             this._cloned = null;
+
             if (this._plConId) {
                 LEFTBOX.disconnect(this._plConId);
                 this._plConId = null;
@@ -809,6 +1209,7 @@ export const IndicatorsDrawer = GObject.registerClass(
                 RIGHTBOX.disconnect(this._prConId);
                 this._prConId = null;
             }
+
             super.destroy();
         }
     }
