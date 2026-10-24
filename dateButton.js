@@ -182,18 +182,11 @@ export const DateButton = GObject.registerClass(
 
         _formatVertical(str) {
             let dateStr = str
-                .replace(/\u2002/g, '\n――\n')
-                .replace(/\s+/g, '\n');
-            if (
-                dateStr.split(':').length > 2 ||
-                dateStr.split('∶').length > 2
-            ) {
-                dateStr = dateStr.replace(/:|∶/g, '\n𐤟 𐤟\n');
-            } else {
-                dateStr = dateStr.replace(/\n――/g, '');
-            }
-            dateStr = dateStr.replace(/\n\n+/g, '\n');
-            if (dateStr[0] === '\n') dateStr = dateStr.substring(1);
+                .replace(/[:∶]/g, '\n')
+                .replace(/\u2002/g, '\n')
+                .replace(/\s+/g, '\n')
+                .replace(/\n\n+/g, '\n')
+                .trim();
             return dateStr;
         }
 
@@ -202,6 +195,13 @@ export const DateButton = GObject.registerClass(
             const mode = sets.get_string('date-format-mode');
             const now = GLib.DateTime.new_now_local();
             let dateStr = '';
+
+            if (vertical) {
+                const vertFmt = sets.get_string('custom-date-format-vertical');
+                if (vertFmt && vertFmt.trim() !== '') {
+                    return now.format(vertFmt) || '';
+                }
+            }
 
             if (mode === 'time-only') {
                 if (!this._desktopInterfaceSettings) {
@@ -213,10 +213,18 @@ export const DateButton = GObject.registerClass(
                 const showSeconds = this._desktopInterfaceSettings.get_boolean('clock-show-seconds');
 
                 let fmt;
-                if (clockFormat === '12h') {
-                    fmt = showSeconds ? '%-I:%M:%S %p' : '%-I:%M %p';
+                if (vertical) {
+                    if (clockFormat === '12h') {
+                        fmt = showSeconds ? '%-I\n%M\n%S\n%p' : '%-I\n%M\n%p';
+                    } else {
+                        fmt = showSeconds ? '%H\n%M\n%S' : '%H\n%M';
+                    }
                 } else {
-                    fmt = showSeconds ? '%H:%M:%S' : '%H:%M';
+                    if (clockFormat === '12h') {
+                        fmt = showSeconds ? '%-I:%M:%S %p' : '%-I:%M %p';
+                    } else {
+                        fmt = showSeconds ? '%H:%M:%S' : '%H:%M';
+                    }
                 }
                 dateStr = now.format(fmt) || '';
             } else if (mode === 'custom') {
@@ -226,6 +234,9 @@ export const DateButton = GObject.registerClass(
                 } else {
                     dateStr = DATEMENU._clockDisplay.text || '';
                 }
+                if (vertical) {
+                    dateStr = this._formatVertical(dateStr);
+                }
             } else if (mode === 'follow-panel-date-format') {
                 const pdfFmt = this._getPanelDateFormat();
                 if (pdfFmt) {
@@ -233,16 +244,13 @@ export const DateButton = GObject.registerClass(
                 } else {
                     dateStr = DATEMENU._clockDisplay.text || '';
                 }
+                if (vertical) {
+                    dateStr = this._formatVertical(dateStr);
+                }
             } else {
                 // 'default'
                 dateStr = DATEMENU._clockDisplay.text || '';
-            }
-
-            if (vertical) {
-                const vertFmt = sets.get_string('custom-date-format-vertical');
-                if (vertFmt && vertFmt.trim() !== '' && mode === 'custom') {
-                    dateStr = now.format(vertFmt) || dateStr;
-                } else {
+                if (vertical) {
                     dateStr = this._formatVertical(dateStr);
                 }
             }
