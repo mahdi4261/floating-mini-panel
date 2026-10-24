@@ -51,7 +51,10 @@ export class BlurHelper {
         this._panel = panel;
         this._blurContainer = null;
         this._pipeline = null;
-        this._bindConstraint = null;
+        this._bindX = null;
+        this._bindY = null;
+        this._bindW = null;
+        this._bindH = null;
         this._visibleBinding = null;
         this._opacityBinding = null;
         this._enabled = false;
@@ -163,11 +166,26 @@ export class BlurHelper {
         Main.layoutManager.addTopChrome(this._blurContainer, { trackFullscreen: false });
         Main.uiGroup.set_child_below_sibling(this._blurContainer, this._panel);
 
-        this._bindConstraint = new Clutter.BindConstraint({
+        this._bindX = new Clutter.BindConstraint({
             source: this._panel,
-            coordinate: Clutter.BindCoordinate.ALL,
+            coordinate: Clutter.BindCoordinate.X,
         });
-        this._blurContainer.add_constraint(this._bindConstraint);
+        this._bindY = new Clutter.BindConstraint({
+            source: this._panel,
+            coordinate: Clutter.BindCoordinate.Y,
+        });
+        this._bindW = new Clutter.BindConstraint({
+            source: this._panel,
+            coordinate: Clutter.BindCoordinate.WIDTH,
+        });
+        this._bindH = new Clutter.BindConstraint({
+            source: this._panel,
+            coordinate: Clutter.BindCoordinate.HEIGHT,
+        });
+        this._blurContainer.add_constraint(this._bindX);
+        this._blurContainer.add_constraint(this._bindY);
+        this._blurContainer.add_constraint(this._bindW);
+        this._blurContainer.add_constraint(this._bindH);
 
         this._visibleBinding = this._panel.bind_property(
             'visible',
@@ -199,15 +217,17 @@ export class BlurHelper {
 
         this._enabled = true;
         this._updateStyle();
+        this._updateCornerRadius();
     }
 
-    _getCornersSelection() {
-        let align = Alignment.NONE;
-        try {
-            if (this._panel._sets)
-                align = this._panel._sets.get_int('aligned');
-        } catch (e) {
-            // ignore
+    _getCornersSelection(align = null) {
+        if (align === null) {
+            try {
+                if (this._panel?._sets)
+                    align = this._panel._sets.get_int('aligned');
+            } catch (e) {
+                align = Alignment.NONE;
+            }
         }
 
         if (align & Alignment.TOP)
@@ -226,9 +246,38 @@ export class BlurHelper {
         return 8;
     }
 
-    _updateCornerRadius() {
+    _updateCornerRadius(align = null) {
+        const r = this._getCornerRadius();
+        if (align === null) {
+            try {
+                if (this._panel?._sets)
+                    align = this._panel._sets.get_int('aligned');
+            } catch (e) {
+                align = Alignment.NONE;
+            }
+        }
+
+        let offsetX = 0;
+        let extraWidth = 0;
+
+        if (align & Alignment.LEFT) {
+            offsetX = -r;
+            extraWidth = r;
+        } else if (align & Alignment.RIGHT) {
+            offsetX = 0;
+            extraWidth = r;
+        }
+
+        if (this._bindX)
+            this._bindX.offset = offsetX;
+        if (this._bindW)
+            this._bindW.offset = extraWidth;
+
+        if (this._blurContainer)
+            this._blurContainer.queue_relayout();
+
         if (this._pipeline) {
-            this._pipeline.set_corner_radius(this._getCornerRadius());
+            this._pipeline.set_corner_radius(r);
             this._pipeline.roundedPipeline?.update();
             this._pipeline.repaint_effect?.();
         }
@@ -327,10 +376,13 @@ export class BlurHelper {
         }
 
         if (this._blurContainer) {
-            if (this._bindConstraint) {
-                this._blurContainer.remove_constraint(this._bindConstraint);
-                this._bindConstraint = null;
-            }
+            ['X', 'Y', 'W', 'H'].forEach(coord => {
+                const prop = `_bind${coord}`;
+                if (this[prop]) {
+                    this._blurContainer.remove_constraint(this[prop]);
+                    this[prop] = null;
+                }
+            });
             Main.layoutManager.removeChrome(this._blurContainer);
             this._blurContainer.destroy();
             this._blurContainer = null;

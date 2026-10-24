@@ -165,6 +165,8 @@ export const CtlActions = GObject.registerClass(
                 this._grab = Main.pushModal(this._actor);
                 this._actor.remove_style_pseudo_class('focus');
                 this._parent.style = null;
+                if (this._parent._blurHelper)
+                    this._parent._blurHelper._updateCornerRadius(Alignment.NONE);
                 if (this._actor._handleIcon) {
                     this._actor._handleIcon.opacity = 0;
                 } else if (this._actor.firstChild) {

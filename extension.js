@@ -790,7 +790,7 @@ const FloatingMiniPanel = GObject.registerClass(
             }
 
             if (this._blurHelper)
-                this._blurHelper._updateCornerRadius();
+                this._blurHelper._updateCornerRadius(align);
         }
 
         destroy() {
