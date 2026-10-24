@@ -20,6 +20,7 @@
 'use strict';
 
 import Clutter from 'gi://Clutter';
+import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 import Shell from 'gi://Shell';
@@ -27,6 +28,7 @@ import St from 'gi://St';
 
 import * as Config from 'resource:///org/gnome/shell/misc/config.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as Utils from './utils.js';
 
 const PANELBOX = Main.layoutManager.panelBox;
 const DATEMENU = Main.panel.statusArea['dateMenu'];
@@ -56,11 +58,7 @@ export const DateButton = GObject.registerClass(
                 this.orientStr,
                 GObject.BindingFlags.SYNC_CREATE,
                 (binding, value) => {
-                    if (value) {
-                        DATEMENU.menu._boxPointer._userArrowSide = St.Side.LEFT;
-                    } else {
-                        DATEMENU.menu._boxPointer._userArrowSide = St.Side.TOP;
-                    }
+                    this._updateArrowSide();
                     return [binding, value];
                 },
                 null
@@ -71,22 +69,25 @@ export const DateButton = GObject.registerClass(
                 if (this.mapped) {
                     DATEMENU.menu.sourceActor = this;
                     DATEMENU.menu._arrowAlignment = 0.5;
-                    // START CODE VERTICAL
-                    if (this[this.orientStr])
-                        DATEMENU.menu._boxPointer._userArrowSide = St.Side.LEFT;
+                    this._updateArrowSide();
                 } else {
-                    DATEMENU.menu.sourceActor = DATESOURCEACTOR;
-                    DATEMENU.menu._arrowAlignment = DATEARROWALIGNMENT;
-                    // START CODE VERTICAL
-                    DATEMENU.menu._boxPointer._userArrowSide = St.Side.TOP;
+                    Utils.restoreMenu(DATEMENU.menu, DATESOURCEACTOR, DATEARROWALIGNMENT);
                 }
             });
 
             this.connect('button-press-event', () => {
+                this._updateArrowSide();
                 DATEMENU.menu.toggle();
             });
 
-            this._dmConId = DATEMENU.menu.connect('open-state-changed', () => {
+            this._posConId = this._parent.connect('notify::position', () => {
+                this._updateArrowSide();
+            });
+
+            this._dmConId = DATEMENU.menu.connect('open-state-changed', (menu, isOpen) => {
+                if (isOpen && this.mapped) {
+                    this._updateArrowSide();
+                }
                 if (this.has_style_pseudo_class('active')) {
                     this.remove_style_pseudo_class('active');
                 } else {
@@ -95,34 +96,8 @@ export const DateButton = GObject.registerClass(
                 return GLib.SOURCE_PROPAGATE;
             });
 
-            // START CODE VERTICAL
-            function formatDate(vertical) {
-                let dateStr = DATEMENU._clockDisplay.text;
-                if (vertical) {
-                    // Divide date from time and replace spaces with newlines
-                    dateStr = dateStr
-                        .replace(/\u2002/g, '\n――\n')
-                        .replace(/\s/g, '\n');
-                    // Seconds are active
-                    if (
-                        dateStr.split(':').length > 2 ||
-                        dateStr.split('∶').length > 2
-                    ) {
-                        dateStr = dateStr.replace(/:|∶/g, '\n𐤟 𐤟\n');
-                    } else {
-                        dateStr = dateStr.replace(/\n――/g, '');
-                    }
-                    // If 12h mode
-                    dateStr = dateStr.replace(/\n\n/g, '\n');
-                    // If 12h mode and time only
-                    if (dateStr[0] === '\n') dateStr = dateStr.substring(1);
-                }
-                return dateStr;
-            }
-
             this._dateLabel = new St.Label({
-                // START CODE VERTICAL
-                text: formatDate(this[this.orientStr]),
+                text: this._getClockText(this[this.orientStr]),
                 x_expand: true,
                 x_align: Clutter.ActorAlign.CENTER,
                 y_expand: true,
@@ -131,22 +106,29 @@ export const DateButton = GObject.registerClass(
             });
             this.add_child(this._dateLabel);
 
-            // START CODE VERTICAL
             this.connect('notify::' + this.orientStr, () => {
-                this._dateLabel.text = formatDate(this[this.orientStr]);
+                this._updateClock();
             });
 
-            this._dateConId = DATEMENU._clockDisplay.bind_property_full(
-                'text',
-                this._dateLabel,
-                'text',
-                GObject.Binding.CREATE_SYNC,
-                // START CODE VERTICAL
-                () => {
-                    return [String, formatDate(this[this.orientStr])];
-                },
-                null
-            );
+            // Update clock on system tick or text change
+            this._clockNotifyId = DATEMENU._clock.connect('notify::clock', () => {
+                this._updateClock();
+            });
+
+            this._clockDisplayNotifyId = DATEMENU._clockDisplay.connect('notify::text', () => {
+                this._updateClock();
+            });
+
+            // Update clock when settings change
+            this._setsConId1 = this._parent._sets.connect('changed::date-format-mode', () => {
+                this._updateClock();
+            });
+            this._setsConId2 = this._parent._sets.connect('changed::custom-date-format', () => {
+                this._updateClock();
+            });
+            this._setsConId3 = this._parent._sets.connect('changed::custom-date-format-vertical', () => {
+                this._updateClock();
+            });
 
             this._noteIcon = new St.Icon({
                 style_class: 'system-status-icon',
@@ -158,14 +140,16 @@ export const DateButton = GObject.registerClass(
                 'icon-name',
                 this._noteIcon,
                 'icon-name',
-                GObject.Binding.CREATE_SYNC
+                GObject.BindingFlags.SYNC_CREATE
             );
-            this._noteConId2 = DATEMENU._indicator.bind_property(
-                'visible',
-                this._noteIcon,
-                'visible',
-                GObject.Binding.CREATE_SYNC
-            );
+
+            this._updateNotificationIcon();
+            this._noteVisibleConId = DATEMENU._indicator.connect('notify::visible', () => {
+                this._updateNotificationIcon();
+            });
+            this._setsNotifConId = this._parent._sets.connect('changed::show-date-notification-icon', () => {
+                this._updateNotificationIcon();
+            });
 
             Main.wm.setCustomKeybindingHandler(
                 'toggle-message-tray',
@@ -176,8 +160,115 @@ export const DateButton = GObject.registerClass(
             );
         }
 
+        _getPanelDateFormat() {
+            try {
+                let schemaDir = GLib.get_home_dir() + '/.local/share/gnome-shell/extensions/panel-date-format@keiii.github.com/schemas';
+                let schemaSource = Gio.SettingsSchemaSource.new_from_directory(
+                    schemaDir,
+                    Gio.SettingsSchemaSource.get_default(),
+                    false
+                );
+                let schema = schemaSource.lookup('org.gnome.shell.extensions.panel-date-format', true);
+                if (schema) {
+                    let settings = new Gio.Settings({ settings_schema: schema });
+                    let fmt = settings.get_string('format');
+                    if (fmt && fmt.trim() !== '') return fmt;
+                }
+            } catch (e) {
+                // ignore
+            }
+            return null;
+        }
+
+        _formatVertical(str) {
+            let dateStr = str
+                .replace(/\u2002/g, '\n――\n')
+                .replace(/\s+/g, '\n');
+            if (
+                dateStr.split(':').length > 2 ||
+                dateStr.split('∶').length > 2
+            ) {
+                dateStr = dateStr.replace(/:|∶/g, '\n𐤟 𐤟\n');
+            } else {
+                dateStr = dateStr.replace(/\n――/g, '');
+            }
+            dateStr = dateStr.replace(/\n\n+/g, '\n');
+            if (dateStr[0] === '\n') dateStr = dateStr.substring(1);
+            return dateStr;
+        }
+
+        _getClockText(vertical) {
+            const sets = this._parent._sets;
+            const mode = sets.get_string('date-format-mode');
+            const now = GLib.DateTime.new_now_local();
+            let dateStr = '';
+
+            if (mode === 'time-only') {
+                if (!this._desktopInterfaceSettings) {
+                    this._desktopInterfaceSettings = new Gio.Settings({
+                        schema_id: 'org.gnome.desktop.interface',
+                    });
+                }
+                const clockFormat = this._desktopInterfaceSettings.get_string('clock-format');
+                const showSeconds = this._desktopInterfaceSettings.get_boolean('clock-show-seconds');
+
+                let fmt;
+                if (clockFormat === '12h') {
+                    fmt = showSeconds ? '%-I:%M:%S %p' : '%-I:%M %p';
+                } else {
+                    fmt = showSeconds ? '%H:%M:%S' : '%H:%M';
+                }
+                dateStr = now.format(fmt) || '';
+            } else if (mode === 'custom') {
+                const customFmt = sets.get_string('custom-date-format');
+                if (customFmt && customFmt.trim() !== '') {
+                    dateStr = now.format(customFmt) || '';
+                } else {
+                    dateStr = DATEMENU._clockDisplay.text || '';
+                }
+            } else if (mode === 'follow-panel-date-format') {
+                const pdfFmt = this._getPanelDateFormat();
+                if (pdfFmt) {
+                    dateStr = now.format(pdfFmt) || '';
+                } else {
+                    dateStr = DATEMENU._clockDisplay.text || '';
+                }
+            } else {
+                // 'default'
+                dateStr = DATEMENU._clockDisplay.text || '';
+            }
+
+            if (vertical) {
+                const vertFmt = sets.get_string('custom-date-format-vertical');
+                if (vertFmt && vertFmt.trim() !== '' && mode === 'custom') {
+                    dateStr = now.format(vertFmt) || dateStr;
+                } else {
+                    dateStr = this._formatVertical(dateStr);
+                }
+            }
+
+            return dateStr;
+        }
+
+        _updateClock() {
+            if (this._dateLabel) {
+                this._dateLabel.text = this._getClockText(this[this.orientStr]);
+            }
+        }
+
+        _updateNotificationIcon() {
+            if (!this._noteIcon) return;
+            const showNotif = this._parent._sets.get_boolean('show-date-notification-icon');
+            if (showNotif) {
+                this._noteIcon.visible = DATEMENU._indicator.visible;
+            } else {
+                this._noteIcon.visible = false;
+            }
+        }
+
         _toggleCalendar() {
             if (this.visible || PANELBOX.visible) {
+                this._updateArrowSide();
                 DATEMENU.menu.toggle();
                 if (DATEMENU.menu.isOpen) {
                     DATEMENU.menu.actor.navigate_focus(
@@ -189,7 +280,20 @@ export const DateButton = GObject.registerClass(
             }
         }
 
+        _updateArrowSide() {
+            if (this.mapped && DATEMENU?.menu) {
+                Utils.updateMenuConstraints(this, DATEMENU.menu);
+            }
+        }
+
         destroy() {
+            if (this._posConId && this._parent) {
+                this._parent.disconnect(this._posConId);
+                this._posConId = null;
+            }
+
+            Utils.restoreMenu(DATEMENU.menu, DATESOURCEACTOR, DATEARROWALIGNMENT);
+
             Main.wm.setCustomKeybindingHandler(
                 'toggle-message-tray',
                 Shell.ActionMode.NORMAL |
@@ -198,12 +302,44 @@ export const DateButton = GObject.registerClass(
                 Main.wm._toggleCalendar.bind(Main.wm)
             );
 
-            this._dateConId = null;
+            if (this._clockNotifyId) {
+                DATEMENU._clock.disconnect(this._clockNotifyId);
+                this._clockNotifyId = null;
+            }
+
+            if (this._clockDisplayNotifyId) {
+                DATEMENU._clockDisplay.disconnect(this._clockDisplayNotifyId);
+                this._clockDisplayNotifyId = null;
+            }
+
+            if (this._setsConId1) {
+                this._parent._sets.disconnect(this._setsConId1);
+                this._setsConId1 = null;
+            }
+            if (this._setsConId2) {
+                this._parent._sets.disconnect(this._setsConId2);
+                this._setsConId2 = null;
+            }
+            if (this._setsConId3) {
+                this._parent._sets.disconnect(this._setsConId3);
+                this._setsConId3 = null;
+            }
+            if (this._setsNotifConId) {
+                this._parent._sets.disconnect(this._setsNotifConId);
+                this._setsNotifConId = null;
+            }
+
+            if (this._noteVisibleConId) {
+                DATEMENU._indicator.disconnect(this._noteVisibleConId);
+                this._noteVisibleConId = null;
+            }
+
             this._noteConId1 = null;
-            this._noteConId2 = null;
 
             DATEMENU.menu.disconnect(this._dmConId);
             this._dmConId = null;
+
+            this._desktopInterfaceSettings = null;
 
             super.destroy();
         }

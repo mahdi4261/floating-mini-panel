@@ -50,5 +50,51 @@
         Always visible 3rd party extension indicators.
       </description>
     </key>
+    <key name="show-handle" type="b">
+      <default>true</default>
+      <summary>Show handle button</summary>
+      <description>Show or hide the drag handle and control button.</description>
+    </key>
+    <key name="show-drawer" type="b">
+      <default>true</default>
+      <summary>Show indicators drawer</summary>
+      <description>Show or hide the 3rd party indicators drawer.</description>
+    </key>
+    <key name="show-date" type="b">
+      <default>true</default>
+      <summary>Show date button</summary>
+      <description>Show or hide the clock / date menu button.</description>
+    </key>
+    <key name="show-quick-settings" type="b">
+      <default>true</default>
+      <summary>Show quick settings button</summary>
+      <description>Show or hide the quick settings indicators button.</description>
+    </key>
+    <key name="show-date-notification-icon" type="b">
+      <default>true</default>
+      <summary>Show notification indicator in date button</summary>
+      <description>Show or hide the notification icon / dot next to the clock.</description>
+    </key>
+    <key name="date-format-mode" type="s">
+      <default>'time-only'</default>
+      <summary>Date/time format mode</summary>
+      <description>
+        'time-only' = only time, 'custom' = use custom format, 'follow-panel-date-format' = follow panel-date-format extension, 'default' = GNOME default
+      </description>
+    </key>
+    <key name="custom-date-format" type="s">
+      <default>'%-I:%M %p'</default>
+      <summary>Custom date format</summary>
+      <description>
+        Custom GLib.DateTime strftime format string (e.g. %H:%M, %-I:%M %p, %a %b %-d %H:%M).
+      </description>
+    </key>
+    <key name="custom-date-format-vertical" type="s">
+      <default>''</default>
+      <summary>Custom date format for vertical orientation</summary>
+      <description>
+        Custom format string when panel is in vertical orientation. If empty, automatically formats.
+      </description>
+    </key>
   </schema>
 </schemalist>

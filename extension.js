@@ -39,6 +39,7 @@ import * as ControlButton from './controlButton.js';
 import * as DateButton from './dateButton.js';
 import * as QuickButton from './quickButton.js';
 import * as Utils from './utils.js';
+import * as BlurHelper from './blurHelper.js';
 
 // Persistent variable until restart of GNOME Shell
 // Needed when this is enabled during runtime.
@@ -74,7 +75,7 @@ const Alignment = {
 
 const FloatingMiniPanel = GObject.registerClass(
     class FloatingMiniPanel extends St.BoxLayout {
-        constructor(sets) {
+        constructor(sets, uuid) {
             super({
                 name: 'FloatingMiniPanel',
                 style_class: 'button',
@@ -86,6 +87,7 @@ const FloatingMiniPanel = GObject.registerClass(
             // Issue #10
             this._enaUnredirectFunc = null;
 
+            this._uuid = uuid;
             this._sets = sets;
             this._state = this._sets.get_int('state');
 
@@ -119,18 +121,40 @@ const FloatingMiniPanel = GObject.registerClass(
             // Control Button --------------------------------------------------
             this._ctlBtn = new ControlButton.ControlButton(this);
             this.add_child(this._ctlBtn);
+            this._ctlBtn.visible = this._sets.get_boolean('show-handle');
 
             // Indicators Drawer -----------------------------------------------
             this._indsDrawer = new IndicatorsDrawer.IndicatorsDrawer(this);
             this.add_child(this._indsDrawer);
+            this._indsDrawer.visible = this._sets.get_boolean('show-drawer');
 
             // Date Button -----------------------------------------------------
             this._dateBtn = new DateButton.DateButton(this);
             this.add_child(this._dateBtn);
+            this._dateBtn.visible = this._sets.get_boolean('show-date');
 
             // Quick Button ----------------------------------------------------
             this._quickBtn = new QuickButton.QuickButton(this);
             this.add_child(this._quickBtn);
+            this._quickBtn.visible = this._sets.get_boolean('show-quick-settings');
+
+            // Component visibility listeners
+            this._showHandleConId = this._sets.connect('changed::show-handle', () => {
+                this._ctlBtn.visible = this._sets.get_boolean('show-handle');
+                this._updateFallbackDrag();
+            });
+            this._showDrawerConId = this._sets.connect('changed::show-drawer', () => {
+                this._indsDrawer.visible = this._sets.get_boolean('show-drawer');
+            });
+            this._showDateConId = this._sets.connect('changed::show-date', () => {
+                this._dateBtn.visible = this._sets.get_boolean('show-date');
+            });
+            this._showQuickConId = this._sets.connect('changed::show-quick-settings', () => {
+                this._quickBtn.visible = this._sets.get_boolean('show-quick-settings');
+            });
+
+            this._panelDragAction = null;
+            this._updateFallbackDrag();
 
             // QuickSettings Toggle --------------------------------------------
             this._fmpQuickToggle = new QuickSettings.QuickMenuToggle({
@@ -199,7 +223,7 @@ const FloatingMiniPanel = GObject.registerClass(
                     if (this.visible || PANELBOX.visible)
                         QUICKSETTINGS.menu.open();
                 }
-                return Clutter.Event_STOP;
+                return Clutter.EVENT_STOP;
             });
 
             // Toggle clicked
@@ -224,7 +248,7 @@ const FloatingMiniPanel = GObject.registerClass(
                     this._sets.set_int('state', this._state);
                 }
                 if (this.visible || PANELBOX.visible) QUICKSETTINGS.menu.open();
-                return Clutter.Event_STOP;
+                return Clutter.EVENT_STOP;
             });
 
             this._fmpQuickIndicator = new QuickSettings.SystemIndicator();
@@ -286,7 +310,7 @@ const FloatingMiniPanel = GObject.registerClass(
                         );
                     }
                 }
-                return Clutter.Event_PROPAGATE;
+                return Clutter.EVENT_PROPAGATE;
             });
 
             this.connect_object(
@@ -296,7 +320,7 @@ const FloatingMiniPanel = GObject.registerClass(
                         if (this.visible) this._relocate(false);
                         return GLib.SOURCE_REMOVE;
                     });
-                    return Clutter.Event_STOP;
+                    return Clutter.EVENT_STOP;
                 },
                 // START CODE VERTICAL
                 'notify::height',
@@ -305,7 +329,7 @@ const FloatingMiniPanel = GObject.registerClass(
                         if (this.visible) this._relocate(false);
                         return GLib.SOURCE_REMOVE;
                     });
-                    return Clutter.Event_STOP;
+                    return Clutter.EVENT_STOP;
                 },
                 // END CODE VERTICAL
                 this
@@ -318,21 +342,21 @@ const FloatingMiniPanel = GObject.registerClass(
                 if (this._state === State.ON && !OVERVIEW.visible) {
                     this._showFloatingMiniPanel();
                 }
-                return Clutter.Event_PROPAGATE;
+                return Clutter.EVENT_PROPAGATE;
             });
 
             this._ovConId1 = OVERVIEW.connect('showing', () => {
                 if (this._state === State.ON) {
                     this._hideFloatingMiniPanel();
                 }
-                return Clutter.Event_PROPAGATE;
+                return Clutter.EVENT_PROPAGATE;
             });
 
             this._ovConId2 = OVERVIEW.connect('hiding', () => {
                 if (this._state === State.ON) {
                     this._showFloatingMiniPanel();
                 }
-                return Clutter.Event_PROPAGATE;
+                return Clutter.EVENT_PROPAGATE;
             });
 
             // Set this to Auto Mode and disable Permanent Mode if the
@@ -379,12 +403,15 @@ const FloatingMiniPanel = GObject.registerClass(
                             }
                         }
                     }
-                    return Clutter.Event_PROPAGATE;
+                    return Clutter.EVENT_PROPAGATE;
                 }
             );
 
             // Complete startup
             LAYOUTMANAGER.addTopChrome(this, {trackFullscreen: false});
+
+            // Blur My Shell integration
+            this._blurHelper = new BlurHelper.BlurHelper(this);
 
             // Issue #10
             // Absolutely necessary code! If 'unredirect' is not disabled, this
@@ -401,45 +428,33 @@ const FloatingMiniPanel = GObject.registerClass(
 	            }
             }
 
-            // If this is in 'permanent mode' and disabled/enabled during
-            // runtime (not accross sessions!) or screen is unlocked.
-            if (startupComplete && this._state === State.ON) {
-                this._checkPanelHidingExts();
-                if (this._permItem.reactive) {
-                    this._preparePermanentMode(true);
-                    this._showFloatingMiniPanel();
-                }
-            }
-            // If this is in 'auto mode' and disabled/enabled during runtime
-            // (not accross sessions!) or screen is unlocked.
-            if (startupComplete && this._state === State.AUTO) {
-                this._checkPanelHidingExts();
-                if (Utils.panelBoxHidden()) this._showFloatingMiniPanel();
-            }
+            if (LAYOUTMANAGER._startingUp) {
+                this._lsConId = LAYOUTMANAGER.connect('startup-complete', () => {
+                    this._checkPanelHidingExts();
 
-            // If this is in 'permanent mode' and already enabled,
-            // wait for GNOME Shell to finish startup
-            this._lsConId = LAYOUTMANAGER.connect('startup-complete', () => {
-                // START CODE PANEL-HIDING EXTENSIONS
-                // Set this to Auto Mode and disable Permanent Mode if the
-                // panel-hiding extension 'Dash-To-Panel' or 'Hide-Top-Bar'
-                // is enabled to make sure no problems occur!
-                // Check at startup
-                this._checkPanelHidingExts();
+                    if (this._state === State.ON) {
+                        this._preparePermanentMode(true);
+                        if (!OVERVIEW.visible) this._showFloatingMiniPanel();
+                    }
+                    startupComplete = true;
 
-                if (this._state === State.ON) {
-                    this._preparePermanentMode(true);
-                    if (!OVERVIEW.visible) this._showFloatingMiniPanel();
-                }
+                    LAYOUTMANAGER.disconnect(this._lsConId);
+                    this._lsConId = null;
+
+                    return Clutter.EVENT_PROPAGATE;
+                });
+            } else {
                 startupComplete = true;
-
-                // Remove connection, we don't need it anymore
-                // in the running session.
-                LAYOUTMANAGER.disconnect(this._lsConId);
-                this._lsConId = null;
-
-                return Clutter.Event_PROPAGATE;
-            });
+                this._checkPanelHidingExts();
+                if (this._state === State.ON) {
+                    if (this._permItem.reactive) {
+                        this._preparePermanentMode(true);
+                        this._showFloatingMiniPanel();
+                    }
+                } else if (this._state === State.AUTO) {
+                    if (Utils.panelBoxHidden()) this._showFloatingMiniPanel();
+                }
+            }
 
             // Recognize Suspend
             this._loginManager = LoginManager.getLoginManager();
@@ -452,7 +467,7 @@ const FloatingMiniPanel = GObject.registerClass(
                     if (this._state === State.ON && !state) {
                         this._showFloatingMiniPanel();
                     }
-                    return Clutter.Event_PROPAGATE;
+                    return Clutter.EVENT_PROPAGATE;
                 }
             );
         }
@@ -679,6 +694,9 @@ const FloatingMiniPanel = GObject.registerClass(
                     this.style = null;
                     break;
             }
+
+            if (this._blurHelper)
+                this._blurHelper._updateCornerRadius();
         }
 
         destroy() {
@@ -728,6 +746,11 @@ const FloatingMiniPanel = GObject.registerClass(
             this._fmpQuickIndicator.destroy();
             this._fmpQuickIndicator = null;
 
+            if (this._blurHelper) {
+                this._blurHelper.destroy();
+                this._blurHelper = null;
+            }
+
             LAYOUTMANAGER.removeChrome(this);
 
             // Issue #10
@@ -742,9 +765,52 @@ const FloatingMiniPanel = GObject.registerClass(
 	            this._enaUnredirectFunc = null;
 	        }
 
+            if (this._showHandleConId) {
+                this._sets.disconnect(this._showHandleConId);
+                this._showHandleConId = null;
+            }
+            if (this._showDrawerConId) {
+                this._sets.disconnect(this._showDrawerConId);
+                this._showDrawerConId = null;
+            }
+            if (this._showDateConId) {
+                this._sets.disconnect(this._showDateConId);
+                this._showDateConId = null;
+            }
+            if (this._showQuickConId) {
+                this._sets.disconnect(this._showQuickConId);
+                this._showQuickConId = null;
+            }
+
+            if (this._panelDragAction) {
+                this.remove_action(this._panelDragAction);
+                this._panelDragAction.destroy();
+                this._panelDragAction = null;
+            }
+
             this._preparePermanentMode(false);
 
             super.destroy();
+        }
+
+        _updateFallbackDrag() {
+            const hasHandle = this._sets.get_boolean('show-handle');
+            if (!hasHandle && !this._panelDragAction) {
+                this._panelDragAction = new ControlButton.CtlActions(this);
+                this.add_action(this._panelDragAction);
+            } else if (hasHandle && this._panelDragAction) {
+                this.remove_action(this._panelDragAction);
+                this._panelDragAction.destroy();
+                this._panelDragAction = null;
+            }
+        }
+
+        _openPreferences() {
+            try {
+                Main.extensionManager.openExtensionPrefs(this._uuid || 'floating-mini-panel@mahdi4261.github.com', '', {});
+            } catch (e) {
+                console.error('Failed to open Floating Mini Panel preferences', e);
+            }
         }
     }
 );
@@ -752,11 +818,10 @@ const FloatingMiniPanel = GObject.registerClass(
 export default class FloatingMiniPanelExtension extends Extension {
     constructor(metadata) {
         super(metadata);
-        startupComplete = false;
     }
 
     enable() {            
-        this._floatingMiniPanel = new FloatingMiniPanel(this.getSettings());
+        this._floatingMiniPanel = new FloatingMiniPanel(this.getSettings(), this.uuid);
     }
 
     disable() {

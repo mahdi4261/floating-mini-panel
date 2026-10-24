@@ -27,6 +27,8 @@ import St from 'gi://St';
 
 import * as Config from 'resource:///org/gnome/shell/misc/config.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as Utils from './utils.js';
+import { QuickSettingsScroll } from './quickSettingsScroll.js';
 
 const PANELBOX = Main.layoutManager.panelBox;
 const QUICKSETTINGS = Main.panel.statusArea['quickSettings'];
@@ -46,6 +48,7 @@ export const QuickButton = GObject.registerClass(
             });
 
             this._parent = parent;
+            this._qsScroll = new QuickSettingsScroll();
 
             // START CODE VERTICAL
             this.orientStr = shellVersion > 47 ? 'orientation' : 'vertical';
@@ -55,13 +58,7 @@ export const QuickButton = GObject.registerClass(
                 this.orientStr,
                 GObject.BindingFlags.SYNC_CREATE,
                 (binding, value) => {
-                    if (value) {
-                        QUICKSETTINGS.menu._boxPointer._userArrowSide =
-                            St.Side.LEFT;
-                    } else {
-                        QUICKSETTINGS.menu._boxPointer._userArrowSide =
-                            St.Side.TOP;
-                    }
+                    this._updateArrowSide();
                     return [binding, value];
                 },
                 null
@@ -72,19 +69,16 @@ export const QuickButton = GObject.registerClass(
                 if (this.mapped) {
                     QUICKSETTINGS.menu.sourceActor = this;
                     QUICKSETTINGS.menu._arrowAlignment = 0.5;
-                    // START CODE VERTICAL
-                    if (this[this.orientStr])
-                        QUICKSETTINGS.menu._boxPointer._userArrowSide =
-                            St.Side.LEFT;
+                    this._qsScroll.apply();
+                    this._updateArrowSide();
                 } else {
-                    QUICKSETTINGS.menu.sourceActor = QUICKSOURCEACTOR;
-                    QUICKSETTINGS.menu._arrowAlignment = QUICKARROWALIGNMENT;
-                    // START CODE VERTICAL
-                    QUICKSETTINGS.menu._boxPointer._userArrowSide = St.Side.TOP;
+                    this._qsScroll.revert();
+                    Utils.restoreMenu(QUICKSETTINGS.menu, QUICKSOURCEACTOR, QUICKARROWALIGNMENT);
                 }
             });
 
             this.connect('button-press-event', (obj, event) => {
+                this._updateArrowSide();
                 if (event.get_button() === 1) QUICKSETTINGS.menu.toggle();
                 // Open QuickSettings menu with ShutdownItem menu opened
                 // with right click
@@ -94,9 +88,16 @@ export const QuickButton = GObject.registerClass(
                 }
             });
 
+            this._posConId = this._parent.connect('notify::position', () => {
+                this._updateArrowSide();
+            });
+
             this._qmConId = QUICKSETTINGS.menu.connect(
                 'open-state-changed',
-                () => {
+                (menu, isOpen) => {
+                    if (isOpen && this.mapped) {
+                        this._updateArrowSide();
+                    }
                     if (this.has_style_pseudo_class('active')) {
                         this.remove_style_pseudo_class('active');
                     } else {
@@ -118,40 +119,46 @@ export const QuickButton = GObject.registerClass(
                 this
             );
 
-            if (QUICKSETTINGS._system) {
+            if (QUICKSETTINGS._system?._systemItem) {
                 // Close QuickSettings menu when PowerToggle is clicked.
-                this._ptConId1 =
-                    QUICKSETTINGS._system._systemItem._powerToggle.connect(
-                        'clicked',
-                        () => {
-                            QUICKSETTINGS.menu.close();
-                        }
-                    );
-
-                // Close QuickSettings menu when SettingsItem is clicked.
-                let childs =
-                    QUICKSETTINGS._system._systemItem.firstChild.get_children();
-                for (let child of childs) {
-                    if (child._settingsApp) {
-                        this._settingsItem = child;
-                        this._siConId2 = this._settingsItem.connect(
+                if (QUICKSETTINGS._system._systemItem._powerToggle) {
+                    this._ptConId1 =
+                        QUICKSETTINGS._system._systemItem._powerToggle.connect(
                             'clicked',
                             () => {
                                 QUICKSETTINGS.menu.close();
                             }
                         );
-                        break;
+                }
+
+                // Close QuickSettings menu when SettingsItem is clicked.
+                let firstChild = QUICKSETTINGS._system._systemItem.firstChild;
+                if (firstChild && typeof firstChild.get_children === 'function') {
+                    let childs = firstChild.get_children();
+                    for (let child of childs) {
+                        if (child._settingsApp) {
+                            this._settingsItem = child;
+                            this._siConId2 = this._settingsItem.connect(
+                                'clicked',
+                                () => {
+                                    QUICKSETTINGS.menu.close();
+                                }
+                            );
+                            break;
+                        }
                     }
                 }
 
                 // Close QuickSettings menu when Shutdown-Suspend is clicked.
-                this._simConId3 =
-                    QUICKSETTINGS._system._systemItem.menu.connect(
-                        'activate',
-                        () => {
-                            QUICKSETTINGS.menu.close();
-                        }
-                    );
+                if (QUICKSETTINGS._system._systemItem.menu) {
+                    this._simConId3 =
+                        QUICKSETTINGS._system._systemItem.menu.connect(
+                            'activate',
+                            () => {
+                                QUICKSETTINGS.menu.close();
+                            }
+                        );
+                }
             }
 
             Main.wm.setCustomKeybindingHandler(
@@ -279,7 +286,25 @@ export const QuickButton = GObject.registerClass(
             }
         }
 
+        _updateArrowSide() {
+            if (this.mapped && QUICKSETTINGS?.menu) {
+                Utils.updateMenuConstraints(this, QUICKSETTINGS.menu);
+            }
+        }
+
         destroy() {
+            if (this._posConId && this._parent) {
+                this._parent.disconnect(this._posConId);
+                this._posConId = null;
+            }
+
+            if (this._qsScroll) {
+                this._qsScroll.revert();
+                this._qsScroll = null;
+            }
+
+            Utils.restoreMenu(QUICKSETTINGS.menu, QUICKSOURCEACTOR, QUICKARROWALIGNMENT);
+
             this._cloneInds = null;
             this._orgInds = null;
 
@@ -291,18 +316,20 @@ export const QuickButton = GObject.registerClass(
                 Main.wm._toggleQuickSettings.bind(Main.wm)
             );
 
-            if (QUICKSETTINGS._system) {
-                QUICKSETTINGS._system._systemItem._powerToggle.disconnect(
-                    this._ptConId1
-                );
-                this._ptConId1 = null;
+            if (QUICKSETTINGS._system?._systemItem) {
+                if (this._ptConId1 && QUICKSETTINGS._system._systemItem._powerToggle) {
+                    QUICKSETTINGS._system._systemItem._powerToggle.disconnect(
+                        this._ptConId1
+                    );
+                    this._ptConId1 = null;
+                }
 
-                if (this._settingsItem) {
+                if (this._settingsItem && this._siConId2) {
                     this._settingsItem.disconnect(this._siConId2);
                     this._siConId2 = null;
                 }
 
-                if (this._simConId3) {
+                if (this._simConId3 && QUICKSETTINGS._system._systemItem.menu) {
                     QUICKSETTINGS._system._systemItem.menu.disconnect(
                         this._simConId3
                     );

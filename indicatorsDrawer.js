@@ -26,6 +26,7 @@ import St from 'gi://St';
 
 import * as Config from 'resource:///org/gnome/shell/misc/config.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as Utils from './utils.js';
 
 const PANEL = Main.panel;
 const PANELBOX = Main.layoutManager.panelBox;
@@ -109,7 +110,10 @@ const IndicatorClone = GObject.registerClass(
 
                 this._ind.menu.connectObject(
                     'open-state-changed',
-                    () => {
+                    (menu, isOpen) => {
+                        if (isOpen && this.mapped) {
+                            Utils.updateMenuConstraints(this, this._ind.menu);
+                        }
                         if (this.has_style_pseudo_class('active')) {
                             this.remove_style_pseudo_class('active');
                         } else {
@@ -128,7 +132,10 @@ const IndicatorClone = GObject.registerClass(
                     this._indArrow = this._ind.arcMenu.arrowAlignment;
                     this._ind.arcMenu.connectObject(
                         'open-state-changed',
-                        () => {
+                        (menu, isOpen) => {
+                            if (isOpen && this.mapped) {
+                                Utils.updateMenuConstraints(this, this._ind.arcMenu);
+                            }
                             if (this.has_style_pseudo_class('active')) {
                                 this.remove_style_pseudo_class('active');
                             } else {
@@ -140,7 +147,10 @@ const IndicatorClone = GObject.registerClass(
                     );
                     this._ind.arcMenuContextMenu.connectObject(
                         'open-state-changed',
-                        () => {
+                        (menu, isOpen) => {
+                            if (isOpen && this.mapped) {
+                                Utils.updateMenuConstraints(this, this._ind.arcMenuContextMenu);
+                            }
                             if (this.has_style_pseudo_class('active')) {
                                 this.remove_style_pseudo_class('active');
                             } else {
@@ -161,31 +171,38 @@ const IndicatorClone = GObject.registerClass(
 
             // START CODE VERTICAL
             this.connect_after('notify::' + this.orientStr, () => {
-                if (this._ind.menu) {
-                    if (this[this.orientStr]) {
-                        this._ind.menu._boxPointer._userArrowSide =
-                            St.Side.LEFT;
-                    } else {
-                        this._ind.menu._boxPointer._userArrowSide = St.Side.TOP;
+                if (this.mapped) {
+                    if (this._ind.menu) {
+                        Utils.updateMenuConstraints(this, this._ind.menu);
+                    }
+                    if (this._ind.arcMenu) {
+                        Utils.updateMenuConstraints(this, this._ind.arcMenu);
+                        Utils.updateMenuConstraints(this, this._ind.arcMenuContextMenu);
                     }
                 }
-                if (this._ind.arcMenu) {
-                    if (this[this.orientStr]) {
-                        this._ind.arcMenu._boxPointer._userArrowSide =
-                            St.Side.LEFT;
-                        this._ind.arcMenuContextMenu._boxPointer._userArrowSide =
-                            St.Side.LEFT;
-                    } else {
-                        this._ind.arcMenu._boxPointer._userArrowSide =
-                            St.Side.TOP;
-                        this._ind.arcMenuContextMenu._boxPointer._userArrowSide =
-                            St.Side.TOP;
+            });
+
+            this._posConId = this._parent.connect('notify::position', () => {
+                if (this.mapped) {
+                    if (this._ind.menu) {
+                        Utils.updateMenuConstraints(this, this._ind.menu);
+                    }
+                    if (this._ind.arcMenu) {
+                        Utils.updateMenuConstraints(this, this._ind.arcMenu);
+                        Utils.updateMenuConstraints(this, this._ind.arcMenuContextMenu);
                     }
                 }
             });
 
             // Connect actions -------------------------------------------------
             this.connect('button-press-event', (obj, event) => {
+                if (this._ind?.menu) {
+                    Utils.updateMenuConstraints(this, this._ind.menu);
+                }
+                if (this._ind?.arcMenu) {
+                    Utils.updateMenuConstraints(this, this._ind.arcMenu);
+                    Utils.updateMenuConstraints(this, this._ind.arcMenuContextMenu);
+                }
                 if (event.get_button() === 2) {
                     // AppIndicator roles are dynamic, so we cant handle them!
                     if (!this._role.startsWith('appindicator'))
@@ -233,13 +250,15 @@ const IndicatorClone = GObject.registerClass(
                 GLib.PRIORITY_DEFAULT,
                 timeout,
                 () => {
+                    this._timeoutId = null;
+                    if (!this._ind || !this._containers || !this._indContainers || !this.get_parent())
+                        return GLib.SOURCE_REMOVE;
                     this._containers.push(this);
                     this._indContainers.push(this._ind);
                     this._findIndChilds(
                         this._indContainers[0],
                         this._containers[0]
                     );
-                    this._timeoutId = null;
                     return GLib.SOURCE_REMOVE;
                 }
             );
@@ -458,15 +477,9 @@ const IndicatorClone = GObject.registerClass(
                 if (on) {
                     this._ind.menu.sourceActor = this;
                     this._ind.menu._arrowAlignment = 0.5;
-                    // START CODE VERTICAL
-                    if (this[this.orientStr])
-                        this._ind.menu._boxPointer._userArrowSide =
-                            St.Side.LEFT;
+                    Utils.updateMenuConstraints(this, this._ind.menu);
                 } else {
-                    this._ind.menu.sourceActor = this._indActor;
-                    this._ind.menu.arrowAlignment = this._indArrow;
-                    // START CODE VERTICAL
-                    this._ind.menu._boxPointer._userArrowSide = St.Side.TOP;
+                    Utils.restoreMenu(this._ind.menu, this._indActor, this._indArrow);
                 }
             } else {
                 // Support for ArcMenu
@@ -476,40 +489,31 @@ const IndicatorClone = GObject.registerClass(
                         this._ind.arcMenu._arrowAlignment = 0.5;
                         this._ind.arcMenuContextMenu.sourceActor = this;
                         this._ind.arcMenuContextMenu._arrowAlignment = 0.5;
-                        // START CODE VERTICAL
-                        if (this[this.orientStr]) {
-                            this._ind.arcMenu._boxPointer._userArrowSide =
-                                St.Side.LEFT;
-                            this._ind.arcMenuContextMenu._boxPointer._userArrowSide =
-                                St.Side.LEFT;
-                        }
+                        Utils.updateMenuConstraints(this, this._ind.arcMenu);
+                        Utils.updateMenuConstraints(this, this._ind.arcMenuContextMenu);
                     } else {
-                        this._ind.arcMenu.sourceActor = this._indActor;
-                        this._ind.arcMenu.arrowAlignment = this._indArrow;
-                        this._ind.arcMenuContextMenu.sourceActor =
-                            this._indActor;
-                        this._ind.arcMenuContextMenu.arrowAlignment =
-                            this._indArrow;
-                        // START CODE VERTICAL
-                        this._ind.arcMenu._boxPointer._userArrowSide =
-                            St.Side.TOP;
-                        this._ind.arcMenuContextMenu._boxPointer._userArrowSide =
-                            St.Side.TOP;
+                        Utils.restoreMenu(this._ind.arcMenu, this._indActor, this._indArrow);
+                        Utils.restoreMenu(this._ind.arcMenuContextMenu, this._indActor, this._indArrow);
                     }
                 }
             }
         }
 
         destroy() {
+            if (this._posConId && this._parent) {
+                this._parent.disconnect(this._posConId);
+                this._posConId = null;
+            }
+
             if (this._timeoutId) {
                 GLib.Source.remove(this._timeoutId);
                 this._timeoutId = null;
             }
 
-            if (this._parent._cloned) {
-                this._parent._cloned.splice(
-                    this._parent._cloned.indexOf(this._ind, 1)
-                );
+            if (this._parent?._cloned) {
+                let idx = this._parent._cloned.indexOf(this._ind);
+                if (idx >= 0)
+                    this._parent._cloned.splice(idx, 1);
             }
 
             if (this.get_parent()) {

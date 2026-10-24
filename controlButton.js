@@ -28,6 +28,7 @@ import St from 'gi://St';
 import * as Config from 'resource:///org/gnome/shell/misc/config.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
+import * as Utils from './utils.js';
 
 const DISPLAY = global.display;
 const OVERVIEW = Main.overview;
@@ -43,12 +44,12 @@ const Alignment = {
     CENTER: 16,
 };
 
-const CtlActions = GObject.registerClass(
+export const CtlActions = GObject.registerClass(
     class CtlActions extends Clutter.Action {
         constructor(actor) {
             super();
             this._actor = actor;
-            this._parent = this._actor._parent;
+            this._parent = this._actor._parent || this._actor;
             this._click = false;
             this._longpress = false;
             this._grab = null;
@@ -156,6 +157,8 @@ const CtlActions = GObject.registerClass(
 
         // Right longpress action
         _rightBtnLongPress() {
+            if (this._actor._updateArrowSide)
+                this._actor._updateArrowSide();
             this._actor.menu.toggle();
         }
 
@@ -249,7 +252,13 @@ const CtlActions = GObject.registerClass(
                 GLib.Source.remove(this._timeoutId);
                 this._timeoutId = null;
             }
-            super.destroy();
+            if (this._grab !== null) {
+                Main.popModal(this._grab);
+                this._grab.dismiss();
+                this._grab = null;
+            }
+            this._actor = null;
+            this._parent = null;
         }
     }
 );
@@ -386,8 +395,19 @@ export const ControlButton = GObject.registerClass(
             this.menu.addMenuItem(
                 new MenuItem('Toggle Menu', 'Right LongPress', () => {})
             );
+            this.menu.addMenuItem(
+                new PopupMenu.PopupSeparatorMenuItem()
+            );
+            this.menu.addMenuItem(
+                new MenuItem('Preferences…', '', () => {
+                    this._parent._openPreferences();
+                })
+            );
 
-            this.menu.connect('open-state-changed', () => {
+            this.menu.connect('open-state-changed', (menu, isOpen) => {
+                if (isOpen) {
+                    this._updateArrowSide();
+                }
                 if (this.has_style_pseudo_class('active')) {
                     this.remove_style_pseudo_class('active');
                 } else {
@@ -407,12 +427,11 @@ export const ControlButton = GObject.registerClass(
                     if (value) {
                         this.ltTxt = 'Left';
                         this.rbTxt = 'Right';
-                        this.menu._boxPointer._userArrowSide = St.Side.LEFT;
                     } else {
                         this.ltTxt = 'Top';
                         this.rbTxt = 'Bottom';
-                        this.menu._boxPointer._userArrowSide = St.Side.TOP;
                     }
+                    this._updateArrowSide();
                     let items = this.menu._getMenuItems();
                     items[1].side.text = this.ltTxt + ' - Start';
                     items[2].side.text = this.ltTxt + ' - Center';
@@ -425,8 +444,13 @@ export const ControlButton = GObject.registerClass(
                 null
             );
 
+            this._posConId = this._parent.connect('notify::position', () => {
+                this._updateArrowSide();
+            });
+
             // Handling for GNOME 46, 47, 48, 49
-            this.add_action(new CtlActions(this));
+            this._action = new CtlActions(this);
+            this.add_action(this._action);
 
             this.connect('scroll-event', (obj, event) => {
                 Main.wm.handleWorkspaceScroll(event);
@@ -463,10 +487,28 @@ export const ControlButton = GObject.registerClass(
             }
         }
 
+        _updateArrowSide() {
+            if (this.menu) {
+                Utils.updateMenuConstraints(this, this.menu);
+            }
+        }
+
         destroy() {
+            if (this.menu?._boxPointer) {
+                Utils.unhookBoxPointer(this.menu._boxPointer);
+            }
+            if (this._posConId && this._parent) {
+                this._parent.disconnect(this._posConId);
+                this._posConId = null;
+            }
             if (this._timeoutId) {
                 GLib.Source.remove(this._timeoutId);
                 this._timeoutId = null;
+            }
+            if (this._action) {
+                this.remove_action(this._action);
+                this._action.destroy();
+                this._action = null;
             }
             super.destroy();
         }
